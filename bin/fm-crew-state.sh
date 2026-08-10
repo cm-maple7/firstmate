@@ -385,22 +385,32 @@ nm_ci_checks_state() {
 # is exact) - but branch + coarse status is exactly what this predicate needs:
 # is a run for THIS branch active right now.
 #
-# Rows are newest-first and the first QUALIFYING one wins, but sha identity is
-# not what qualifies a live row. An ACTIVE run legitimately advances the branch
-# tip away from the worktree - the pipeline's rebase step and every fix-round
-# commit move it - so the live row's short sha stops matching exactly while the
-# run is healthiest. Requiring sha identity there discarded the live row, let
-# the walk continue, and matched an OLDER superseded row that still happened to
-# sit on the worktree sha (verified 2026-08-03: worktree 8909c8e, rows
-# `running fm/rd-sportfix bf96c1ca` then `cancelled fm/rd-sportfix 8909c8ee`;
-# the cancelled row was reported while `axi status` said the run was running).
-# So an active row qualifies on branch alone, and the sha test survives only
-# where it is sound: disambiguating FINISHED rows, so a historical run on a
-# reused branch is never attributed to rewritten code. Keeping newest-first
-# precedence is deliberate - a genuinely terminal newest row still reports
-# terminal, so no stale active row can read as a false green. Echoes that
-# row's status word, or empty when the branch has no qualifying run within
-# FM_CREW_STATE_RUNS_LIMIT rows.
+# Rows are newest-first and the branch's NEWEST row decides, always - the walk
+# never continues past it into an older row of the same branch. Within that one
+# deciding row, sha identity is not what qualifies a live run. An ACTIVE run
+# legitimately advances the branch tip away from the worktree - the pipeline's
+# rebase step and every fix-round commit move it - so the live row's short sha
+# stops matching exactly while the run is healthiest. Requiring sha identity
+# there discarded the live row, let the walk continue, and matched an OLDER
+# superseded row that still happened to sit on the worktree sha (verified
+# 2026-08-03: worktree 8909c8e, rows `running fm/rd-sportfix bf96c1ca` then
+# `cancelled fm/rd-sportfix 8909c8ee`; the cancelled row was reported while
+# `axi status` said the run was running). So an active row qualifies on branch
+# alone, and the sha test survives only where it is sound: disambiguating a
+# FINISHED newest row, so a historical run on a reused branch is never
+# attributed to rewritten code.
+#
+# Stopping the walk at that newest row is what keeps "active outranks sha" from
+# becoming a false green in the other direction. A crew that rebases its own
+# branch past its finished run leaves a NEWEST terminal row that no longer
+# binds; letting the walk continue would hand authority to an OLDER abandoned
+# active row and report a two-day-dead run as a healthy pipeline, overriding
+# the crew's own `blocked:` line (verified 2026-08-10 against this branch's
+# real fleet records). A newest row that is finished and no longer binds
+# therefore yields nothing rather than deferring to an older row: the worktree
+# sits on code a newer run has already moved past, so an older run's verdict is
+# not current-state evidence. Echoes the deciding row's status word, or empty
+# when the branch has no qualifying run within FM_CREW_STATE_RUNS_LIMIT rows.
 #
 # The row's single sha column is the run's CURRENT head, not the head the
 # worktree submitted (verified against the installed CLI v1.41.2: the running
@@ -429,12 +439,15 @@ nm_runs_status_for_branch() {  # <branch>
     rest=$(trim "$rest")
     sha=${rest%% *}
     [ "$br" = "$branch" ] || continue
+    # The branch's NEWEST row decides, always.
     # Active: this branch's live run, whatever its tip has moved to.
     # Finished: only when it still binds to this worktree's code identity.
+    # Either way the walk stops here, so a newer row that fails the head test
+    # can never hand authority to an OLDER active row.
     if nm_runs_status_is_active "$st" || nm_coarse_head_matches_worktree "$sha"; then
       printf '%s' "$st"
-      return 0
     fi
+    return 0
   done <<< "$out"
   return 0
 }
