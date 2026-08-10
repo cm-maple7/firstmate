@@ -30,6 +30,11 @@
 #       sitting on the worktree sha, in both the reported state and the
 #       watcher's absorb class - while a genuinely terminal row, and a finished
 #       row that no longer binds to this code, keep their existing verdicts.
+#   (m) the mirror-image skew (2026-08-10), where the CREW rebases its own
+#       branch past its run: a live row survives it, a genuine terminal row on
+#       the submitted head survives it, and a newest terminal row that no longer
+#       binds must not hand authority to an OLDER abandoned active row - which
+#       would be a false green that also masks the crew's own blocked line.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -917,6 +922,127 @@ test_head_skew_absorb_class_is_working() {
   pass "a head-skewed live run is absorbed as working, not surfaced immediately"
 }
 
+# The mirror image of rewrite_tip_as_rebase: here the RUN stays on the head the
+# crew submitted and the WORKTREE moves, which is what a crew does when it
+# rebases its own branch onto an advanced default branch after its run went
+# terminal (verified 2026-08-10 as the real chronology of a failed rebase-step
+# run: submitted head 227e806, worktree replayed to ed8cf86, mutually
+# non-ancestral). Replays a real file commit through a real `git rebase` and
+# echoes the submitted tip's short sha, so a row armed with it no longer binds.
+# Asserts the mutual non-ancestry it claims to build, so these cases cannot go
+# quietly vacuous by leaving the two commits on one line of history.
+rebase_worktree_past_run() {  # <dir> <branch> -> echoes the submitted short sha
+  local dir=$1 branch=$2 submitted base advanced
+  printf 'crew work\n' > "$dir/crew.txt"
+  git -C "$dir" add crew.txt
+  git -C "$dir" commit -q -m 'crew implementation commit'
+  submitted=$(git -C "$dir" rev-parse HEAD)
+  base=$(git -C "$dir" rev-parse HEAD~1)
+  git -C "$dir" checkout -q --detach "$base"
+  printf 'upstream work\n' > "$dir/upstream.txt"
+  git -C "$dir" add upstream.txt
+  git -C "$dir" commit -q -m 'upstream advanced'
+  advanced=$(git -C "$dir" rev-parse HEAD)
+  git -C "$dir" checkout -q "$branch"
+  git -C "$dir" rebase -q --onto "$advanced" "$base" "$branch" >/dev/null 2>&1 \
+    || fail "rebase_worktree_past_run could not replay the crew commit"
+  [ "$(git -C "$dir" rev-parse HEAD)" != "$submitted" ] \
+    || fail "rebase_worktree_past_run left the worktree on the submitted head"
+  git -C "$dir" merge-base --is-ancestor "$(git -C "$dir" rev-parse HEAD)" "$submitted" 2>/dev/null \
+    && fail "rebase_worktree_past_run left the worktree head an ancestor of the run head"
+  git -C "$dir" merge-base --is-ancestor "$submitted" "$(git -C "$dir" rev-parse HEAD)" 2>/dev/null \
+    && fail "rebase_worktree_past_run left the run head an ancestor of the worktree head"
+  git -C "$dir" rev-parse --short=8 "$submitted"
+}
+
+# REGRESSION (2026-08-10): the adversarial companion to
+# test_newer_terminal_row_outranks_older_active_row. There the newest terminal
+# row still bound to the worktree; here the crew rebased its branch past its own
+# failed run, so the newest row no longer binds - and an OLDER abandoned active
+# row (a run left `running` for days with nothing driving it) sits behind it.
+# Walking past the newest row would report that dead run as a healthy pipeline
+# AND override the crew's own `blocked:` line, so the watcher would absorb the
+# wake instead of surfacing a stuck crew. The branch's newest row must decide.
+test_newer_nonbinding_terminal_row_does_not_revive_older_active_row() {
+  reset_fakes
+  local d submitted out class; d=$(new_case coarse-newest-nonbinding)
+  make_repo_on_branch "$d/wt" fm/feat-revive
+  submitted=$(rebase_worktree_past_run "$d/wt" fm/feat-revive)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-revive.meta" "window=fm:fm-feat-revive" \
+    "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: pipeline will not accept the rebased branch\n' \
+    > "$d/state/feat-revive.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed       fm/feat-revive ${submitted}  2026-08-10 13:20
+  running      fm/feat-revive 9999999a  2026-08-08 11:44
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-revive
+  out=$(run_crew_state "$d" feat-revive)
+  assert_not_contains "$out" "state: working" "an abandoned older active row must not read as a false green"
+  assert_not_contains "$out" "source: run-step" "a non-binding newest row must not attribute an older row's run"
+  assert_contains "$out" "state: blocked" "the crew's own blocked line stays current"
+  assert_contains "$out" "source: status-log" "falls back past the branch's non-binding newest row"
+  class=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_absorb_class feat-revive)
+  [ "$class" = none ] \
+    || fail "blocked crew classified as '$class', not none (wake would be absorbed)"
+  if PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working feat-revive; then
+    fail "blocked crew was treated as provably working"
+  fi
+  pass "a non-binding newest terminal row does not revive an older active row"
+}
+
+# The genuine-failure control for the case above: one `failed` row for the
+# branch, on the head the crew submitted, with the worktree still on that head.
+# Nothing about the newest-row rule may soften a real terminal verdict.
+test_single_failed_row_on_submitted_head_stays_failed() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-single-failed)
+  make_repo_on_branch "$d/wt" fm/feat-genuine
+  git -C "$d/wt" commit -q --allow-empty -m 'crew implementation commit'
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-genuine.meta" "window=fm:fm-feat-genuine" \
+    "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: waiting on the pipeline\n' > "$d/state/feat-genuine.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  failed       fm/feat-genuine ${short}  2026-08-10 13:40"
+  out=$(run_crew_state "$d" feat-genuine)
+  assert_contains "$out" "state: failed" "a genuine failed run on this exact code is terminal"
+  assert_contains "$out" "source: run-step" "binding terminal coarse row -> run-step source"
+  assert_contains "$out" "run failed" "the terminal detail names the failed run"
+  pass "a single failed row on the submitted head stays failed"
+}
+
+# The mirror-image skew, and the direction no other case covers: every existing
+# head-skew case moves the RUN past the worktree, this one moves the WORKTREE
+# past a still-live run. The run is this branch's live pipeline whatever its tip
+# now relates to, so it must keep run-step attribution rather than falling back
+# to guessing from the crew's own status log.
+test_live_row_survives_worktree_rebased_past_it() {
+  reset_fakes
+  local d submitted out; d=$(new_case coarse-worktree-rebased-live)
+  make_repo_on_branch "$d/wt" fm/feat-cprime
+  submitted=$(rebase_worktree_past_run "$d/wt" fm/feat-cprime)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cprime.meta" "window=fm:fm-feat-cprime" \
+    "worktree=$d/wt" "kind=ship" "harness=claude"
+  # A stale blocker from before the rebase: falling back would report it.
+  printf 'blocked: waiting on a conflict resolution\n' > "$d/state/feat-cprime.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  running      fm/feat-cprime ${submitted}  2026-08-10 13:20"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-cprime
+  out=$(run_crew_state "$d" feat-cprime)
+  assert_contains "$out" "state: working" "a live run survives the crew rebasing past its head"
+  assert_contains "$out" "source: run-step" "live row keeps run-step attribution across worktree skew"
+  assert_not_contains "$out" "state: blocked" "the superseded status-log verb must not decide"
+  pass "a live run survives the worktree being rebased past it"
+}
+
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status() {
   reset_fakes
   local d short; d=$(new_case coarse-ready-other-log)
@@ -1616,6 +1742,9 @@ test_newer_terminal_row_outranks_older_active_row
 test_terminal_row_on_diverged_sha_not_attributed
 test_pending_row_is_working
 test_head_skew_absorb_class_is_working
+test_newer_nonbinding_terminal_row_does_not_revive_older_active_row
+test_single_failed_row_on_submitted_head_stays_failed
+test_live_row_survives_worktree_rebased_past_it
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane
