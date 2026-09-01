@@ -19,7 +19,10 @@
 # to decide whether a crew that just stopped its turn or went stale is working,
 # deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
 # and first sighting of a stale hash, never on every wake, so the per-wake triage
-# stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
+# stays cheap. crew_run_step_paused makes that same bounded fm-crew-state.sh call
+# a second time, but only inside the already-rare declared-pause branch its
+# caller gates it behind, to tell a run-step-corroborated pause from a
+# status-log-only one. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
 # cursor and folded open-set as a side effect, so a per-drain fleet-wide scan
 # stays bounded by new appends instead of re-reading each task's whole lifetime

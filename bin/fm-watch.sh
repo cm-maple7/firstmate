@@ -27,8 +27,12 @@
 #                          applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
-#                          wedge threshold also surfaces, with an "escalation N"
-#                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
+#                          wedge threshold surfaces with an "escalation N" count in
+#                          the reason, EXCEPT a run-step-classified working chain
+#                          (a background no-mistakes validation, not a busy pane),
+#                          which re-verifies the run-step at that same threshold
+#                          and keeps absorbing for as long as it still reports
+#                          working. At FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
 #                          wake payload itself, not just repetition, forces a
