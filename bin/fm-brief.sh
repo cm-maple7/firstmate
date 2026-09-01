@@ -401,15 +401,8 @@ DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
 # printing the exact next step instead, so "committed, gates green" mechanically
 # cannot pass as done. Other modes have no pipeline step to skip, so they keep
 # the bare echo.
-if [ "$MODE" = no-mistakes ]; then
-  STATUS_HELPER=$(shell_quote "$FM_ROOT/bin/fm-status-append.sh")
-  REPORT_CMD="$STATUS_HELPER $STATUS_FILE \"{state}: {one short line}\""
-  REPORT_GUARD_NOTE="
-   This mode=no-mistakes task's status file is guarded: appending \`done:\` this way is refused, with the exact next step printed instead, until \`no-mistakes\` has recorded a validated PR for this task. Never bypass the helper with a bare \`echo ... >> $STATUS_FILE\`."
-else
-  REPORT_CMD="echo \"{state}: {one short line}\" >> $STATUS_FILE"
-  REPORT_GUARD_NOTE=""
-fi
+REPORT_CMD=$(fm_status_report_line "$MODE" "$FM_ROOT" "$STATUS_FILE")
+REPORT_GUARD_NOTE=$(fm_status_report_guard_note "$MODE" "$STATUS_FILE")
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.

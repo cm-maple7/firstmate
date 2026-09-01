@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# Single owner of a ship task's mode-specific "Definition of done" block.
-# Sourced by bin/fm-brief.sh, which renders it into a generated ship brief, and by
-# bin/fm-promote.sh, which renders it into the ship instructions a promoted scout
+# Single owner of a ship task's mode-specific "Definition of done" block, and of
+# the mode-specific status-report command that goes with it.
+# Sourced by bin/fm-brief.sh, which renders both into a generated ship brief, and by
+# bin/fm-promote.sh, which renders both into the ship instructions a promoted scout
 # receives. Both paths must hand the worker the same contract: a promoted
-# no-mistakes worker that never received the ask-user escalation rule or the
-# `--yes` ban is the exact delivery hole this single owner exists to close.
+# no-mistakes worker that never received the ask-user escalation rule, the
+# `--yes` ban, or the guarded status-report command is the exact delivery hole
+# this single owner exists to close.
 # fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
 # stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
 # The block opens with the fixed machine-readable "Delivery contract: mode=<mode>"
 # line that bin/fm-spawn.sh checks a ship brief against.
+# fm_status_report_line <mode> <fm-root> <quoted-status-file> prints the exact
+# status-report command a worker on that mode must run: the guarded
+# bin/fm-status-append.sh helper for mode=no-mistakes (the only mode with a
+# pipeline step to skip), otherwise the bare `echo ... >> status-file` every
+# other mode keeps. fm_status_report_guard_note <mode> <quoted-status-file>
+# prints the accompanying warning against bypassing the helper (empty for
+# every mode but no-mistakes), formatted to append inline after a sentence
+# (leading newline, no trailing one).
 # Every heredoc here stays outside a command substitution: `VAR=$(cat <<EOF ...)`
 # breaks parsing of the whole file on Bash 3.2 (tests/fm-brief.test.sh).
 
@@ -70,4 +80,25 @@ EOF
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2
       return 1 ;;
   esac
+}
+
+fm_status_report_line() {  # <mode> <fm-root> <quoted-status-file>
+  local mode=$1 fm_root=$2 status_file_q=$3
+  case "$mode" in
+    no-mistakes)
+      printf '%s %s "{state}: {one short line}"' "$(printf '%q' "$fm_root/bin/fm-status-append.sh")" "$status_file_q"
+      ;;
+    *)
+      printf 'echo "{state}: {one short line}" >> %s' "$status_file_q"
+      ;;
+  esac
+}
+
+fm_status_report_guard_note() {  # <mode> <quoted-status-file>
+  local mode=$1 status_file_q=$2
+  [ "$mode" = no-mistakes ] || return 0
+  cat <<EOF
+
+   This mode=no-mistakes task's status file is guarded: appending \`done:\` this way is refused, with the exact next step printed instead, until \`no-mistakes\` has recorded a validated PR for this task. Never bypass the helper with a bare \`echo ... >> $status_file_q\`.
+EOF
 }

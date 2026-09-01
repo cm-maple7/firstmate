@@ -7,9 +7,12 @@
 # delivers them. Those instructions carry the scratch-state inventory, the clean
 # default-branch base, the fm/<task-id> branch, and - rendered from
 # bin/fm-dod-lib.sh, the single owner an ordinary ship brief also uses - the
-# mode-specific Definition of done, so a promoted worker receives exactly the same
-# delivery contract as a briefed one, including the no-mistakes mode's ask-user
-# escalation rule and --yes ban.
+# mode-specific Definition of done and status-report command, so a promoted
+# worker receives exactly the same delivery contract as a briefed one,
+# including the no-mistakes mode's ask-user escalation rule, --yes ban, and
+# guarded bin/fm-status-append.sh status-report command (a scout is never
+# mode=no-mistakes, so its own status-report rule is always the bare echo that
+# command replaces for a promoted no-mistakes worker).
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
@@ -136,6 +139,20 @@ grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (ki
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
+
+# A promoted worker's status-report command is rendered from the same single
+# owner (bin/fm-dod-lib.sh) an ordinary ship brief uses, not hand-copied from
+# the scout brief's bare echo: a scout is never mode=no-mistakes, so its rule 4
+# is always the bare echo, and that command carrying over unchanged into a
+# promoted no-mistakes worker's instructions is the exact structural hole the
+# guarded helper (bin/fm-status-append.sh) exists to close.
+STATUS_FILE_Q=$(printf '%q' "$STATE/$ID.status")
+REPORT_CMD=$(fm_status_report_line "$MODE" "$FM_ROOT" "$STATUS_FILE_Q")
+REPORT_GUARD_NOTE=$(fm_status_report_guard_note "$MODE" "$STATUS_FILE_Q")
+CARRYOVER_RULE="6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
+7. Report status by appending one line:
+   \`$REPORT_CMD\`$REPORT_GUARD_NOTE"
+
 TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
 {
   cat <<EOF
@@ -147,7 +164,7 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 3. Return to a clean default-branch base, then create your branch: \`git checkout -b fm/$ID\`.
 4. Carry over only the intended fix changes. Leave scratch commits, debug edits, and experiment files behind.
 5. If you reproduced a bug, turn that reproduction into a regression test.
-6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
+$CARRYOVER_RULE
 
 EOF
   fm_dod_block "$MODE" "$ID"
