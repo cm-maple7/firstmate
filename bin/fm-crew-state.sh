@@ -8,9 +8,8 @@
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
 # current state from a tail of the log: it reads the authoritative source (a
-# no-mistakes run-step attributed to this crew's branch and current code
-# identity, else the pane busy-signature) and reconciles the possibly-stale log
-# against it.
+# no-mistakes run-step attributed under bin/fm-nm-run-lib.sh's contract, else
+# the pane busy-signature) and reconciles the possibly-stale log against it.
 #
 # The determinism lives entirely here - only run-step / pane / log reads plus
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
@@ -27,17 +26,10 @@
 #      to the routed status log; dead/missing report the remote verdict; an
 #      unreachable or unreadable remote reports unknown-remote, never a false
 #      gone/dead.
-#   2. Matching no-mistakes run for this crew's branch AND current code identity,
-#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
-#      fallback)? Branch name alone is not enough: a historical run on a reused
-#      branch whose head was rewritten or diverged must not be attributed.
-#      A run matches when its head equals the worktree HEAD, or the worktree HEAD
-#      is an ancestor of the run head (pipeline fix commits advanced the run on
-#      the same line of history). Local work that advanced past the run head, or
-#      diverged from it, invalidates attribution. In the coarse runs-list
-#      fallback an ACTIVE run for the branch outranks that head test, because a
-#      live pipeline rewrites the very tip it is validating - see
-#      nm_runs_status_for_branch for the exact selection order.
+#   2. Attribute an active or terminal no-mistakes run. bin/fm-nm-run-lib.sh
+#      owns the branch, head, and pipeline-custody rules the rich `axi status`
+#      path applies; nm_runs_status_for_branch below owns the coarse
+#      `no-mistakes runs` fallback's newest-row-decides selection order.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -226,7 +218,7 @@ crew_busy_verdict() {  # <target>
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
 # trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
-# branch+head attribution rule below are thin wrappers over the ONE owner in
+# attribution helpers below are thin wrappers over the ONE owner in
 # bin/fm-nm-run-lib.sh, shared with fm-teardown.sh's pre-teardown run abort.
 
 trim() { fm_nm_trim "$@"; }
@@ -416,11 +408,25 @@ nm_ci_checks_state() {
 # not current-state evidence. Echoes the deciding row's status word, or empty
 # when the branch has no qualifying run within FM_CREW_STATE_RUNS_LIMIT rows.
 #
+# This newest-row stop SUBSUMES a resolvability test on the row's head
+# (fm_nm_head_resolvable), which distinguishes an unresolvable "unknown
+# attribution" head from a proven mismatch. That distinction cannot carry the
+# coarse scan here: firstmate task worktrees share one object store with the
+# primary checkout, and the pipeline publishes its lane heads into it as
+# `refs/no-mistakes/sync/<run-id>` through this repo's `no-mistakes` remote, so
+# a live run's lane head IS a resolvable object (verified 2026-08-31 against
+# the live fleet: 7 of 8 real run heads, including the running row, resolved in
+# a task worktree). A resolvability guard therefore reads "proven mismatch" and
+# walks on to the older row in exactly the incident it is meant to stop.
+# Stopping at the branch's newest row holds whether or not the head resolves.
+#
 # The row's single sha column is the run's CURRENT head, not the head the
-# worktree submitted (verified against the installed CLI v1.41.2: the running
-# row printed its advanced head_sha while its submitted_head_sha - the
-# worktree commit - appeared nowhere in the output). This surface therefore
-# offers no submitted-head field to bind against.
+# worktree submitted (verified against CLI v1.41.2: the running row printed its
+# advanced head_sha while its submitted_head_sha - the worktree commit -
+# appeared nowhere in the output; re-confirmed on v1.60.2, whose `runs` rows
+# still carry one head column). This surface therefore offers no submitted-head
+# field to bind against, unlike `axi status`, whose branch_sync block lets the
+# primary path bind a live run by pipeline custody instead.
 #
 # Active vs finished is no-mistakes' own vocabulary, not a guess: the binary's
 # active-run query is `status IN ('pending', 'running')` and its terminal
@@ -447,7 +453,7 @@ nm_runs_status_for_branch() {  # <branch>
     # Active: this branch's live run, whatever its tip has moved to.
     # Finished: only when it still binds to this worktree's code identity.
     # Either way the walk stops here, so a newer row that fails the head test
-    # can never hand authority to an OLDER active row.
+    # can never hand authority to an OLDER superseded row.
     if nm_runs_status_is_active "$st" || nm_coarse_head_matches_worktree "$sha"; then
       printf '%s' "$st"
     fi
@@ -489,12 +495,17 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
+    # Head equality, or the pipeline-owned-active exemption: while the
+    # pipeline owns this branch, the daemon's own branch attribution is
+    # authoritative and the lane head need not be a git object here
+    # (fm_nm_run_is_pipeline_owned_active in bin/fm-nm-run-lib.sh).
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
+      && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
       HAVE_RUN=1
     else
-      # The active-or-most-recent run is for another branch, or same branch with
-      # a rewritten/diverged head (the CLI is alive and answered; only the
-      # attribution missed) - try the coarse fallback.
+      # The active-or-most-recent run is for another branch, or its same-branch
+      # attribution failed (the CLI is alive and answered) - try the coarse
+      # fallback.
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
@@ -522,8 +533,9 @@ if [ "$HAVE_RUN" = 1 ]; then
     # gets full detail once `axi status` reports its own branch again (e.g.
     # once its own step is the most-recently-touched one), and its own
     # needs-decision/blocked status-log append (a captain-relevant VERB) is
-    # surfaced through signal_reason_is_actionable regardless of this
-    # coarse-vs-full distinction, so a real gate is never silently missed.
+    # surfaced by each supervisor's span classification (fm-classify-lib.sh's
+    # status_span_first_actionable) regardless of this coarse-vs-full
+    # distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       pending)   RUN_STATE=working; RUN_DETAIL="validation queued (background run)" ;;
