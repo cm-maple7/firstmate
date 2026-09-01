@@ -1321,13 +1321,14 @@ crew_is_paused() {  # <id>
 # read (crew_absorb_class already made one), but only inside the already-rare
 # declared-pause branch its caller gates this behind, never per poll.
 crew_run_step_paused() {  # <id>
-  local id=$1 line
+  local id=$1 line state src
   [ -n "$id" ] || return 1
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || return 1
-  case "$line" in
-    "state: paused"*"source: run-step"*) return 0 ;;
-    *) return 1 ;;
-  esac
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = paused ] || return 1
+  src=${line#*source: }; src=${src%% *}
+  [ "$src" = run-step ]
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.
