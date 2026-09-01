@@ -19,7 +19,10 @@
 # to decide whether a crew that just stopped its turn or went stale is working,
 # deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
 # and first sighting of a stale hash, never on every wake, so the per-wake triage
-# stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
+# stays cheap. crew_run_step_paused makes that same bounded fm-crew-state.sh call
+# a second time, but only inside the already-rare declared-pause branch its
+# caller gates it behind, to tell a run-step-corroborated pause from a
+# status-log-only one. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
 # cursor and folded open-set as a side effect, so a per-drain fleet-wide scan
 # stays bounded by new appends instead of re-reading each task's whole lifetime
@@ -1307,6 +1310,28 @@ crew_is_provably_working() {  # <id>
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
+}
+
+# 0 if crew <id>'s declared pause/captain-held wait is attributed to the
+# run-step (fm-crew-state.sh's ci-monitoring-only reconciliation), as opposed
+# to the no-run status-log fallback. A run-step pause has already been
+# corroborated against the pipeline's own state - no gate, not fixing, no
+# independently-resolved outcome - so fm-watch.sh's pause_state_class trusts
+# it outright, live agent or not. A no-run fallback pause carries no such
+# corroboration and instead still needs pause_state_class's agent-liveness
+# recovery: a still-alive agent may be sitting at an undeclared live
+# interactive gate rather than the wait it named. A second $FM_CREW_STATE_BIN
+# read (crew_absorb_class already made one), but only inside the already-rare
+# declared-pause branch its caller gates this behind, never per poll.
+crew_run_step_paused() {  # <id>
+  local id=$1 line state src
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || return 1
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = paused ] || return 1
+  src=${line#*source: }; src=${src%% *}
+  [ "$src" = run-step ]
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.
