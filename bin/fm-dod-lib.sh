@@ -99,6 +99,6 @@ fm_status_report_guard_note() {  # <mode> <quoted-status-file>
   [ "$mode" = no-mistakes ] || return 0
   cat <<EOF
 
-   This mode=no-mistakes task's status file is guarded: appending \`done:\` this way is refused, with the exact next step printed instead, until \`no-mistakes\` has recorded a validated PR for this task. Never bypass the helper with a bare \`echo ... >> $status_file_q\`.
+   This mode=no-mistakes task's status file is guarded: appending \`done:\` this way is refused, with the exact next step printed instead, unless the line itself names the pipeline's PR URL. Never bypass the helper with a bare \`echo ... >> $status_file_q\`.
 EOF
 }

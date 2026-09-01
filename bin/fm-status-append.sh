@@ -3,27 +3,35 @@
 #
 # A crewmate reports its own state by appending one line to state/<id>.status
 # (AGENTS.md section 3's status protocol). For a mode=no-mistakes ship task,
-# done only means the pipeline reported CI green with a recorded PR
-# (bin/fm-pr-check.sh's pr= line in the sibling state/<id>.meta) -
-# no-mistakes still owns review, fixes, tests, documentation, push, PR, and
-# CI, so a worker that stops at "committed, gates green" without ever
-# starting it is not done. Brief wording alone has repeatedly failed to stop
-# that early stop (see git history for this file's introducing PR), so this
-# is the mechanical backstop: bin/fm-brief.sh's generated no-mistakes ship
-# brief routes its status-report command through this helper instead of a
-# bare `echo ... >> status-file`. Other delivery modes and kinds keep the
-# bare echo, since they have no pipeline step to skip.
+# done only means the pipeline reported CI green with a PR - no-mistakes still
+# owns review, fixes, tests, documentation, push, PR, and CI, so a worker that
+# stops at "committed, gates green" without ever starting it is not done.
+# Brief wording alone has repeatedly failed to stop that early stop (see git
+# history for this file's introducing PR), so this is the mechanical
+# backstop: bin/fm-brief.sh's generated no-mistakes ship brief routes its
+# status-report command through this helper instead of a bare
+# `echo ... >> status-file`. Other delivery modes and kinds keep the bare
+# echo, since they have no pipeline step to skip.
+#
+# The gate cannot key off state/<id>.meta's pr= line: firstmate writes that
+# (via bin/fm-pr-check.sh) only AFTER seeing the worker's own done report
+# (AGENTS.md section 7), so pr= is never present yet at the moment this exact
+# call fires - checking it here would refuse every legitimate final done too.
+# Instead this checks the line's own shape: the DOD's only prescribed final
+# done text is `done: PR {url} checks green`, so a done: line that names a
+# real http(s) URL is accepted, and one that does not (e.g. "committed, gates
+# green", or the DOD's earlier "done: {summary}" wording) is refused.
 #
 # Usage: fm-status-append.sh <status-file> <status-line>
 #   <status-file>  the crew's state/<id>.status path; its sibling
 #                  state/<id>.meta (same basename, .meta instead of .status)
-#                  is read for kind=, mode=, and pr=.
+#                  is read for kind= and mode=.
 #   <status-line>  the exact line to append, e.g. "done: implemented".
 #
 # Refuses (exit 1, printing the required next step to stderr instead of
-# appending) only a `done:` line on a mode=no-mistakes ship task whose meta
-# has no pr= line yet. Every other line, mode, and kind appends exactly as a
-# bare echo would - this is a drop-in replacement, not a new contract.
+# appending) only a `done:` line on a mode=no-mistakes ship task that names no
+# URL. Every other line, mode, and kind appends exactly as a bare echo would -
+# this is a drop-in replacement, not a new contract.
 set -eu
 
 [ $# -eq 2 ] || { echo "usage: fm-status-append.sh <status-file> <status-line>" >&2; exit 2; }
@@ -41,13 +49,18 @@ case "$LINE" in
     KIND=$(meta_value kind)
     [ -n "$KIND" ] || KIND=ship
     MODE=$(meta_value mode)
-    if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ] && ! grep -q '^pr=' "$META" 2>/dev/null; then
-      cat >&2 <<'EOF'
+    if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
+      case "$LINE" in
+        *https://*|*http://*) ;;
+        *)
+          cat >&2 <<'EOF'
 refused: this is a mode=no-mistakes task, so "committed, gates green" is not done.
 Run /no-mistakes now and respond to its gates until it reports CI green, then
 report done as: done: PR {url} checks green
 EOF
-      exit 1
+          exit 1
+          ;;
+      esac
     fi
     ;;
 esac

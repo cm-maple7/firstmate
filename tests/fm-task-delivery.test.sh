@@ -436,9 +436,8 @@ STUB
   assert_contains "$out" "is not done" "refusal did not explain why committed-with-gates-green is not done"
   assert_absent "$status_file" "a refused done was still appended to the promoted worker's status file"
 
-  printf 'pr=https://github.com/x/y/pull/1\n' >> "$meta"
-  done_cmd=${report_cmd/'{state}: {one short line}'/'done: PR https:\/\/github.com\/x\/y\/pull\/1 checks green'}
-  eval "$done_cmd" || fail "the promoted worker's own status-report command refused done after a validated pr= was recorded"
+  done_cmd=${report_cmd/'{state}: {one short line}'/'done: PR https://github.com/x/y/pull/1 checks green'}
+  eval "$done_cmd" || fail "the promoted worker's own status-report command refused a done line naming a real PR URL"
   assert_contains "$(cat "$status_file")" "checks green" \
     "the allowed done line was not appended through the promoted worker's status-report command"
   pass "fm-promote: a promoted no-mistakes worker's own status-report command is guarded exactly like a fresh brief's"

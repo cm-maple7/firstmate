@@ -29,9 +29,9 @@ test_script_parses() {
   pass "fm-status-append.sh: bash -n succeeds"
 }
 
-test_refuses_premature_done_on_no_mistakes_without_pr() {
+test_refuses_premature_done_on_no_mistakes_without_url() {
   local d status meta out rc
-  d=$(new_case refuse-no-pr)
+  d=$(new_case refuse-no-url)
   status="$d/state/t1.status"
   meta="$d/state/t1.meta"
   printf 'kind=ship\nmode=no-mistakes\n' > "$meta"
@@ -40,7 +40,22 @@ test_refuses_premature_done_on_no_mistakes_without_pr() {
   assert_contains "$out" "is not done" "refusal must explain why committed-with-gates-green is not done"
   assert_contains "$out" "Run /no-mistakes now" "refusal must print the exact next step"
   [ ! -e "$status" ] || fail "refused done must not be written to the status file"
-  pass "fm-status-append.sh: refuses a premature no-mistakes done with no recorded pr="
+  pass "fm-status-append.sh: refuses a premature no-mistakes done that names no PR URL"
+}
+
+# The DOD's earlier "done: {summary}" pseudo-terminal wording (fm-dod-lib.sh,
+# before this fix) is exactly as unacceptable as free-text prose: no URL, no
+# pass.
+test_refuses_the_old_dod_summary_wording() {
+  local d status meta out rc
+  d=$(new_case refuse-summary-wording)
+  status="$d/state/t1b.status"
+  meta="$d/state/t1b.meta"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$meta"
+  out=$("$HELPER" "$status" "done: implemented the fix" 2>&1); rc=$?
+  expect_code 1 "$rc" "the retired 'done: {summary}' shape must still be refused"
+  [ ! -e "$status" ] || fail "refused done must not be written to the status file"
+  pass "fm-status-append.sh: refuses the retired done: {summary} wording"
 }
 
 test_allows_nonterminal_lines_on_no_mistakes() {
@@ -56,16 +71,36 @@ test_allows_nonterminal_lines_on_no_mistakes() {
   pass "fm-status-append.sh: allows a nonterminal working: line on a no-mistakes task"
 }
 
-test_allows_done_once_pr_is_recorded() {
+# The critical case: state/<id>.meta's pr= line is written by firstmate's own
+# bin/fm-pr-check.sh only AFTER it sees this exact done report (AGENTS.md
+# section 7), so pr= is NEVER present yet at the moment a worker legitimately
+# reports it - gating on pr= would refuse every real completion. The line's
+# own URL is what must carry the proof instead.
+test_allows_done_with_no_pr_recorded_when_the_line_names_a_url() {
   local d status meta rc
-  d=$(new_case allow-done-with-pr)
+  d=$(new_case allow-done-no-pr-yet)
   status="$d/state/t3.status"
   meta="$d/state/t3.meta"
-  printf 'kind=ship\nmode=no-mistakes\npr=https://github.com/x/y/pull/9\n' > "$meta"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$meta"
   "$HELPER" "$status" "done: PR https://github.com/x/y/pull/9 checks green"; rc=$?
-  expect_code 0 "$rc" "done must be allowed once a validated pr= is recorded"
+  expect_code 0 "$rc" "done must be allowed on its own URL even with no pr= recorded yet (got rc=$rc)"
   assert_contains "$(cat "$status")" "checks green" "the done line must be appended verbatim"
-  pass "fm-status-append.sh: allows done once the pipeline has recorded a validated pr="
+  pass "fm-status-append.sh: allows a done: PR <url> ... line with no pr= recorded in meta yet"
+}
+
+# A recorded pr= (e.g. from a later re-report after firstmate already ran
+# fm-pr-check.sh once) does not exempt a line that itself names no URL - the
+# line's own shape is what is checked, not stale meta state.
+test_recorded_pr_does_not_exempt_a_urlless_done_line() {
+  local d status meta out rc
+  d=$(new_case pr-recorded-but-no-url-in-line)
+  status="$d/state/t3b.status"
+  meta="$d/state/t3b.meta"
+  printf 'kind=ship\nmode=no-mistakes\npr=https://github.com/x/y/pull/9\n' > "$meta"
+  out=$("$HELPER" "$status" "done: committed, gates green" 2>&1); rc=$?
+  expect_code 1 "$rc" "a urlless done line must be refused even with an unrelated pr= present in meta"
+  [ ! -e "$status" ] || fail "refused done must not be written to the status file"
+  pass "fm-status-append.sh: a recorded pr= does not exempt a done line that names no URL"
 }
 
 test_other_modes_never_gated_on_done() {
@@ -108,9 +143,11 @@ test_non_done_lines_always_pass_through() {
 }
 
 test_script_parses
-test_refuses_premature_done_on_no_mistakes_without_pr
+test_refuses_premature_done_on_no_mistakes_without_url
+test_refuses_the_old_dod_summary_wording
 test_allows_nonterminal_lines_on_no_mistakes
-test_allows_done_once_pr_is_recorded
+test_allows_done_with_no_pr_recorded_when_the_line_names_a_url
+test_recorded_pr_does_not_exempt_a_urlless_done_line
 test_other_modes_never_gated_on_done
 test_missing_meta_never_gates_done
 test_non_done_lines_always_pass_through

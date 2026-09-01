@@ -397,10 +397,9 @@ DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
 
 # A mode=no-mistakes ship task's status report routes through the guarded
 # fm-status-append.sh helper instead of a bare echo: it refuses a `done:` line
-# until state/<id>.meta records the pipeline's validated pr= (bin/fm-pr-check.sh),
-# printing the exact next step instead, so "committed, gates green" mechanically
-# cannot pass as done. Other modes have no pipeline step to skip, so they keep
-# the bare echo.
+# that names no PR URL, printing the exact next step instead, so "committed,
+# gates green" mechanically cannot pass as done. Other modes have no pipeline
+# step to skip, so they keep the bare echo.
 REPORT_CMD=$(fm_status_report_line "$MODE" "$FM_ROOT" "$STATUS_FILE")
 REPORT_GUARD_NOTE=$(fm_status_report_guard_note "$MODE" "$STATUS_FILE")
 
