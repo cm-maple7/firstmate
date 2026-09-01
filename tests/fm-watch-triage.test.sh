@@ -1714,6 +1714,14 @@ test_terminal_stale_surfaced() {
 # immediately surfacing a crew that is actively validating. crew_is_provably_working
 # must get a chance to override a captain-relevant-but-stale status line, exactly
 # as it already does for a plain non-terminal one.
+#
+# Regression for the 2026-08-31 rd-tree-goal-replace-anchor incidents: a
+# background no-mistakes validation can legitimately sit on an idle pane far
+# longer than STALE_ESCALATE_SECS. wedge_timer_check's reverify_working path
+# re-confirms the run-step still reads working at each threshold crossing
+# instead of blindly time-escalating, so this stays absorbed for as long as
+# the run genuinely is; only once the run-step stops reporting working
+# (Phase C) does the ladder still escalate.
 test_stale_terminal_status_overridden_by_active_run() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
   dir=$(make_case terminal-stale-overridden); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1749,25 +1757,51 @@ test_stale_terminal_status_overridden_by_active_run() {
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
-  # Phase B: backdate the idle timer past the threshold; the run genuinely
-  # wedges and the next poll escalates exactly like the non-terminal case.
+  # Phase B: backdate the idle timer past the threshold while the run-step
+  # still reads working - the reverify check re-confirms it and resets the
+  # timer instead of escalating, no matter how long the background run has
+  # already sat idle.
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 100 || fail "watcher did not escalate an overridden stale terminal status past the threshold"
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited past the threshold while still provably working (should re-verify and absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a re-verified still-working stale printed a wake reason instead of absorbing"
+  [ ! -s "$state/.wake-queue" ] || fail "a re-verified still-working stale enqueued a wake instead of absorbing"
+  [ ! -s "$state/.wedge-escalations-$key" ] || fail "a re-verified still-working stale incremented the escalation count"
+  [ -s "$state/.stale-since-$key" ] || fail "the timer was cleared instead of reset on re-verified absorb"
+  [ "$(cat "$state/.stale-since-$key")" -gt "$(( $(date +%s) - 500 ))" ] || fail "the timer was not actually reset on re-verified absorb"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-B watcher stop"
+
+  # Phase C: the run-step stops reporting working (it parked, needing a
+  # captain decision) - backdating the timer again now escalates, exactly as
+  # a genuinely wedged run always did.
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at gate: 1 finding(s)'
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not escalate once the run-step stopped reporting working"
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
   unset FM_FAKE_CREW_STATE
-  pass "a stale terminal-looking status is overridden and absorbed while a run is actively working, then wedge-escalated"
+  pass "a stale terminal-looking status is overridden and absorbed while a run is actively working, re-verified past every threshold instead of blindly wedge-escalating, then escalated once the run-step stops reporting working"
 }
 
-# --- non-terminal stale, crew provably working: absorbed, then wedge-escalated ---
+# --- non-terminal stale, crew provably working: absorbed, then re-verified --
+# indefinitely, then escalated once it actually stops working ----------------
 # A provably-working crew (an actively-running pipeline) legitimately sits on a
-# static pane (e.g. waiting on CI), so a non-terminal stale is absorbed and only
-# the wedge timer eventually escalates it - the low-churn behavior preserved.
+# static pane (e.g. waiting on CI) far longer than STALE_ESCALATE_SECS, so a
+# non-terminal stale is absorbed and re-verified at every threshold crossing
+# rather than blindly wedge-escalated on elapsed time alone; only once the
+# run-step stops reporting working does the wedge timer escalate.
 
 test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
@@ -1802,21 +1836,44 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
-  # Phase B: backdate the idle timer past the threshold; the next run escalates.
-  # (The subsequent-sight timer path does not re-read the crew state.)
+  # Phase B: backdate the idle timer past the threshold while the run-step
+  # still reads working; the reverify check re-confirms it and resets the
+  # timer instead of escalating.
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 100 || fail "watcher did not escalate a provably-working non-terminal stale past the threshold"
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited past the threshold while still provably working (should re-verify and absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a re-verified still-working stale printed a wake reason instead of absorbing"
+  [ ! -s "$state/.wake-queue" ] || fail "a re-verified still-working stale enqueued a wake instead of absorbing"
+  [ ! -s "$state/.wedge-escalations-$key" ] || fail "a re-verified still-working stale incremented the escalation count"
+  [ -s "$state/.stale-since-$key" ] || fail "the timer was cleared instead of reset on re-verified absorb"
+  [ "$(cat "$state/.stale-since-$key")" -gt "$(( $(date +%s) - 500 ))" ] || fail "the timer was not actually reset on re-verified absorb"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-B watcher stop"
+
+  # Phase C: the run-step stops reporting working (checks failed and the
+  # pipeline is fixing them) - a genuinely different signature from a quiet
+  # background wait, so backdating the timer again now escalates.
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not escalate once the run-step stopped reporting working"
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer was not cleared after escalation"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
-  pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated past the threshold"
+  unset FM_FAKE_CREW_STATE
+  pass "provably-working non-terminal stale is absorbed on first sight, re-verified past every threshold instead of blindly wedge-escalating, then escalated once the run-step stops reporting working"
 }
 
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
@@ -2283,17 +2340,44 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional authoritative-working stop"
 
+  # Still genuinely working past the threshold: reverify_working re-confirms
+  # it and resets the timer instead of escalating, exactly as a plain
+  # provably-working non-terminal stale now does.
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 100 || fail "authoritative working state did not wedge-escalate past the threshold"
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "authoritative working state escalated instead of re-verifying past the threshold: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a re-verified authoritative-working stale printed a wake reason instead of absorbing"
+  [ -s "$state/.stale-since-$key" ] || fail "the timer was cleared instead of reset on re-verified absorb"
+  [ "$(cat "$state/.stale-since-$key")" -gt "$(( $(date +%s) - 500 ))" ] || fail "the timer was not actually reset on re-verified absorb"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional re-verify watcher stop"
+
+  # The declared pause clears and the run-step stops reporting working: the
+  # ladder still escalates once there is nothing left to re-verify. (The log
+  # must also stop declaring paused: here - as long as it still does,
+  # pause_state_class's declared-wait branch keeps routing an inconclusive
+  # crew-state read to the bounded pause recheck rather than the ladder,
+  # exactly as it does for a live external-decision gate.)
+  printf 'working: upstream landed, resuming\n' > "$state/paused-working.status"
+  sig=$(seen_sig "$state/paused-working.status"); printf '%s' "$sig" > "$state/.seen-paused-working_status"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "authoritative working state did not wedge-escalate once it stopped reporting working"
   grep -F "possible wedge" "$out" >/dev/null || fail "authoritative working wedge escalation omitted its reason"
   [ ! -e "$state/.stale-since-$key" ] || fail "wedge timer remained after authoritative working escalation"
   unset FM_FAKE_CREW_STATE
-  pass "a paused status overridden by authoritative working preserves its wedge timer and escalates"
+  pass "a paused status overridden by authoritative working preserves its wedge timer, keeps re-verifying instead of escalating while genuinely working, then escalates once it stops"
 }
 
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
@@ -2335,6 +2419,11 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
   fi
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional wedge priming stop"
+
+  # The run-step stops reporting working (the run itself has actually stopped,
+  # not merely gone quiet) - reverify_working's re-check now finds nothing to
+  # absorb on, so each round genuinely escalates rather than resetting.
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
 
   n=1
   while [ "$n" -le 3 ]; do

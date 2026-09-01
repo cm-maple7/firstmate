@@ -566,6 +566,45 @@ test_ci_monitoring_still_waiting_stays_working() {
   pass "ci-monitoring run with checks not yet green stays working"
 }
 
+# Regression for the 2026-08-27 fm-parked-run-wedge-alarm incident: a worker
+# waiting on the captain's own merge (or on upstream checks that may never
+# post without maintainer approval) declares paused:, but the ci step's own
+# run-step reading otherwise stays "working" for the entire wait and used to
+# outrank the declaration every poll. The declared wait must win once the
+# run's only remaining activity is CI monitoring.
+test_ci_monitoring_declared_pause_wins_over_working() {
+  reset_fakes
+  local d; d=$(new_case ci-waiting-paused)
+  make_repo_on_branch "$d/wt" fm/feat-ciwaitpaused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ciwaitpaused.meta" "window=fm:fm-feat-ciwaitpaused" "worktree=$d/wt" "kind=ship"
+  printf 'paused: PR reserved for the captain to merge\n' > "$d/state/feat-ciwaitpaused.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-ciwaitpaused)"
+  FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
+  local out; out=$(run_crew_state "$d" feat-ciwaitpaused)
+  assert_contains "$out" "state: paused" "declared wait during ci monitoring -> paused"
+  assert_contains "$out" "source: run-step" "declared wait during ci monitoring -> run-step source"
+  assert_not_contains "$out" "state: working" "declared wait must not stay working"
+  pass "a declared pause during ci-only monitoring wins over the working run-step reading"
+}
+
+# The same declared pause must NOT win once the run has genuinely active work
+# left - a gate awaiting review, in this case - since the declaration there is
+# stale, not a legitimate description of the current wait.
+test_gated_run_declared_pause_does_not_override() {
+  reset_fakes
+  local d; d=$(new_case parked-declared-pause)
+  make_repo_on_branch "$d/wt" fm/feat-gatepaused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-gatepaused.meta" "window=fm:fm-feat-gatepaused" "worktree=$d/wt" "kind=ship"
+  printf 'paused: awaiting the upstream release\n' > "$d/state/feat-gatepaused.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-gatepaused)"
+  local out; out=$(run_crew_state "$d" feat-gatepaused)
+  assert_contains "$out" "state: parked" "a stale declared pause must not hide a genuine gate"
+  assert_not_contains "$out" "state: paused" "a genuine gate must not be reported as a declared wait"
+  pass "a declared pause does not override a run genuinely parked at a gate"
+}
+
 # A later merge-conflict auto-fix round after an earlier green reading must
 # not be masked: the MOST RECENT marker in the log tail wins.
 test_ci_monitoring_green_then_new_issue_stays_working() {
@@ -1561,6 +1600,8 @@ test_ci_monitoring_no_checks_terminal_surfaces_done
 test_ci_monitoring_green_then_rearm_stays_working
 test_ci_monitoring_no_checks_yet_stays_working
 test_ci_monitoring_still_waiting_stays_working
+test_ci_monitoring_declared_pause_wins_over_working
+test_gated_run_declared_pause_does_not_override
 test_ci_monitoring_green_then_new_issue_stays_working
 test_ci_ready_done_log_relapse_stays_working
 test_ci_fixing_after_green_stays_working
