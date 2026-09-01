@@ -588,6 +588,28 @@ test_ci_monitoring_declared_pause_wins_over_working() {
   pass "a declared pause during ci-only monitoring wins over the working run-step reading"
 }
 
+# The declared-wait override must also win once checks have already gone green:
+# the checks-green branch above independently flips RUN_STATE to "done" while
+# CI_STEP_STATUS stays "running", so the override must still fire on that state
+# rather than being masked by the earlier done reclassification. This is the
+# literal incident scenario: fm-crew-state reporting "done, still monitoring"
+# and outranking the worker's declared paused: line.
+test_ci_monitoring_declared_pause_wins_over_checks_green() {
+  reset_fakes
+  local d; d=$(new_case ci-green-paused)
+  make_repo_on_branch "$d/wt" fm/feat-cigreenpaused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cigreenpaused.meta" "window=fm:fm-feat-cigreenpaused" "worktree=$d/wt" "kind=ship"
+  printf 'paused: PR reserved for the captain to merge\n' > "$d/state/feat-cigreenpaused.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cigreenpaused)"
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  local out; out=$(run_crew_state "$d" feat-cigreenpaused)
+  assert_contains "$out" "state: paused" "declared wait during green ci monitoring -> paused"
+  assert_contains "$out" "source: run-step" "declared wait during green ci monitoring -> run-step source"
+  assert_not_contains "$out" "state: done" "declared wait must not be masked by the checks-green done reclassification"
+  pass "a declared pause during ci monitoring wins even after checks have already gone green"
+}
+
 # The same declared pause must NOT win once the run has genuinely active work
 # left - a gate awaiting review, in this case - since the declaration there is
 # stale, not a legitimate description of the current wait.
@@ -1601,6 +1623,7 @@ test_ci_monitoring_green_then_rearm_stays_working
 test_ci_monitoring_no_checks_yet_stays_working
 test_ci_monitoring_still_waiting_stays_working
 test_ci_monitoring_declared_pause_wins_over_working
+test_ci_monitoring_declared_pause_wins_over_checks_green
 test_gated_run_declared_pause_does_not_override
 test_ci_monitoring_green_then_new_issue_stays_working
 test_ci_ready_done_log_relapse_stays_working
