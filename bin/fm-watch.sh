@@ -703,7 +703,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 
 clear_pause_state() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" "$STATE/.paused-run-step-$key"
 }
 
 clear_pause_tracking() {  # <window-key>
@@ -727,18 +727,14 @@ clear_pause_tracking() {  # <window-key>
 # still-alive agent may be sitting at an undeclared live interactive gate
 # rather than the wait it named, so it is surfaced instead of trusted.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive kind
+  local win=$1 task=$2 key last recheck_file run_step_file class agent_alive kind
   key=$(window_key "$win")
   last=$(last_status_line "$STATE/$task.status")
   recheck_file="$STATE/.paused-rechecked-$key"
+  run_step_file="$STATE/.paused-run-step-$key"
   if ! status_is_paused_or_captain_held "$last"; then
     rm -f "$recheck_file"
     crew_absorb_class "$task"
-    return
-  fi
-  if crew_run_step_paused "$task"; then
-    date +%s > "$recheck_file"
-    printf 'paused'
     return
   fi
   # Read once past the declared-wait gate and reused by both liveness gates below,
@@ -746,6 +742,10 @@ pause_state_class() {  # <window> <task>
   # far more common no-declaration path above still costs none.
   kind=$(window_kind "$win")
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
+    if [ -e "$run_step_file" ]; then
+      printf 'paused'
+      return
+    fi
     if [ "$kind" != secondmate ]; then
       agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
@@ -759,10 +759,17 @@ pause_state_class() {  # <window> <task>
   fi
   class=$(crew_absorb_class "$task")
   if [ "$class" = working ]; then
-    rm -f "$recheck_file"
+    rm -f "$recheck_file" "$run_step_file"
     printf 'working'
     return
   fi
+  if [ "$class" = paused ] && crew_run_step_paused "$task"; then
+    date +%s > "$recheck_file"
+    : > "$run_step_file"
+    printf 'paused'
+    return
+  fi
+  rm -f "$run_step_file"
   if [ "$kind" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then

@@ -1176,6 +1176,43 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
 }
 
+# Contrasts directly with the alive-decision-gate case above: there, a status-log-only
+# pause with a live agent pane must surface once because no run corroborates it. Here,
+# fm-crew-state's run-step reconciliation has already corroborated the wait against the
+# pipeline's own state (ci-monitoring-only, no gate, not fixing), so pause_state_class
+# must trust it immediately and absorb on the bounded cadence even though the pane looks
+# just as alive - a worker's own supervising loop staying alive to poll CI is expected.
+test_run_step_paused_trusted_despite_live_agent_pane() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid wakes
+  dir=$(make_case run-step-pause-live-agent); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/ci.status"
+  window="test:fm-ci"
+  printf 'idle background ci monitoring\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/ci.meta"
+  printf 'paused: waiting on ci to go green\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-ci_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle background ci monitoring")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_FAKE_CREW_STATE='state: paused · source: run-step · declared wait (ci monitoring): waiting on ci to go green' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"
+    fail "a run-step-corroborated declared pause surfaced despite a live supervising agent pane: $(cat "$out")"
+  fi
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "run-step-corroborated pause did not enter the bounded pause cadence"; }
+  reap "$pid"
+  wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$wakes" -eq 0 ] || fail "run-step-corroborated pause with a live agent pane surfaced $wakes stale wakes instead of absorbing"
+  pass "a run-step-corroborated declared pause absorbs on the bounded cadence even with a live-looking supervising agent pane"
+}
+
 test_secondmate_paused_resurfaces_in_normal_mode() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back
   dir=$(make_case secondmate-paused-resurface); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2941,6 +2978,7 @@ test_afk_busy_declared_pause_ticking_pane_hands_off_once
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_run_step_paused_trusted_despite_live_agent_pane
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_captain_held_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
