@@ -3,8 +3,9 @@
 Thanks for wanting to contribute.
 One rule up front:
 
-**Human-authored pull requests targeting `main` must be raised through [`no-mistakes`](https://github.com/kunchenguid/no-mistakes).**
+**Human-authored pull requests targeting the upstream repository's `main` must be raised through [`no-mistakes`](https://github.com/kunchenguid/no-mistakes).**
 We require this to reduce the maintainer's burden of reviewing and merging contributions.
+The `Require no-mistakes` check is scoped to the upstream repository, so a downstream fork sets its own delivery rigor per change and legitimately raises direct pull requests on its own `main`.
 
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
@@ -16,7 +17,8 @@ GitHub Actions and Dependabot are exempt so their automation keeps working, but 
 
 ## Workflow
 
-1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent (`git@github.com:kunchenguid/firstmate.git`).
+1. Fork the repo, then clone your fork so `origin` is the repository you can push to.
+   Add the upstream repository as a separate read-only remote with `git remote add upstream https://github.com/kunchenguid/firstmate`.
 2. Create a branch and make your changes.
 3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (contributing to firstmate requires **no-mistakes v1.46.0+** for structured attestation; without a fork, plain `no-mistakes init` still works for maintainers with push access).
 4. Commit your changes.
@@ -31,6 +33,30 @@ GitHub Actions and Dependabot are exempt so their automation keeps working, but 
 7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against the parent repo for you.
 
 See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
+
+## Fork remotes and upstream sync
+
+A downstream fork keeps two remotes with different rights, and every contributor and agent in that fork depends on the distinction.
+`origin` is the fork you can push to, and it is the only repository that receives branches, pull requests, and merges.
+`upstream` is the parent repository, and it is read-only: never push to it, and never open a pull request against it from a fork that is operating independently.
+Confirm which one you are about to write to with `git remote get-url origin` before any push or pull-request creation, because the two remotes differ only by owner in the URL.
+
+Firstmate homes self-update by fast-forwarding from `origin`, which `bin/fm-update.sh` and the [`updatefirstmate`](.agents/skills/updatefirstmate/SKILL.md) skill own.
+That is the reason a fork cannot pick up upstream work simply by fetching it: the work has to reach the fork's own default branch first.
+Sync the fork deliberately, as its own reviewable change:
+
+1. `git fetch upstream` and start a branch from the fork's current `main`.
+2. `git merge upstream/main` on that branch, producing a merge commit whose first parent is the fork's `main` and whose second parent is the upstream commit being synced.
+   Merge rather than rebase, so every home can fast-forward onto the result instead of being asked to reconcile rewritten history.
+3. Resolve conflicts with evidence rather than preference, and keep a local fix whenever it still covers a case the upstream change does not.
+4. Run the repo's gates on the merge result, then push the branch to `origin` and open the pull request on the fork.
+5. Land it with the configured merge authority, after which every home fast-forwards to it in the ordinary way.
+
+After any remote retarget, re-run `no-mistakes init` and inspect the gate mirror's own `git remote -v` before trusting the next pipeline run.
+The pipeline rebases and opens pull requests from that mirror's `origin`, not from the checkout you are working in, so a mirror still pointing at the old remote sends work to the wrong repository while every local check still looks correct.
+
+Treehouse pool worktrees are `git worktree` entries that share the primary checkout's object store and configuration, so they inherit its remotes rather than defining their own.
+Correcting the remotes once in the primary checkout is therefore what makes every existing and future pool worktree correct.
 
 ## Repo conventions
 
