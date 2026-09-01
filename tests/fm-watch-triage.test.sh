@@ -470,6 +470,30 @@ test_crew_absorb_class_classifier() {
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
 }
 
+# crew_run_step_paused: the run-step-vs-status-log distinction pause_state_class
+# trusts to skip the live-agent-liveness gate. Must anchor to the actual source
+# field (fm-crew-state.sh's fixed "state: X · source: Y · detail" format) rather
+# than searching the whole line for the substring "source: run-step" - a worker's
+# own free-text status note (the detail field, on the status-log fallback path)
+# can legitimately contain that phrase without the pause being run-step-attributed.
+test_crew_run_step_paused_classifier() {
+  local dir fakebin
+  dir=$(make_case run-step-paused-classifier); fakebin="$dir/fakebin"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+  FM_FAKE_CREW_STATE='state: paused · source: run-step · declared wait (ci monitoring): waiting on ci to go green'
+  crew_run_step_paused a || fail "run-step-sourced pause not recognized"
+  FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting on source: run-step to finish'
+  ! crew_run_step_paused a || fail "status-log pause with a free-text mention of 'source: run-step' was misclassified as run-step-attributed"
+  FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting upstream'
+  ! crew_run_step_paused a || fail "plain status-log pause treated as run-step-attributed"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  ! crew_run_step_paused a || fail "a working run-step verdict treated as paused"
+  ! crew_run_step_paused "" || fail "empty id treated as run-step-paused"
+  unset FM_FAKE_CREW_STATE
+  pass "crew_run_step_paused anchors to the source field, never a free-text substring match"
+}
+
 # The wedge detector's third liveness input: writes inside the crew's own recorded
 # worktree. Every negative outcome must report "no evidence" so the caller keeps
 # its existing escalation schedule, and a supervisor-side git read (which touches
@@ -3932,6 +3956,7 @@ test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
+test_crew_run_step_paused_classifier
 test_crew_worktree_written_since_classifier
 test_empty_write_prune_widens_the_probe
 test_empty_write_prune_from_the_environment_widens_the_probe
