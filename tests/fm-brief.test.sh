@@ -256,7 +256,7 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+  assert_grep "Immediately invoke /no-mistakes yourself" "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
@@ -363,6 +363,57 @@ test_no_mistakes_dod_wording() {
   assert_no_grep "no-mistakes refuses" "$brief" \
     "no-mistakes DOD must not claim the tool itself refuses --yes"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright"
+}
+
+# Direct regression for the 08-30/08-31 done-drift pattern: nine ship workers
+# in a row reported `done: ... committed, gates green` without ever starting
+# /no-mistakes, including three that carried an explicit capitalized
+# DEFINITION OF DONE paragraph and still stopped short - so prose alone is not
+# enough. A mode=no-mistakes brief must (a) make invoking the pipeline the
+# literal next step after the commit rather than something the worker waits
+# for firstmate to trigger, and (b) route its status-report command through
+# the guarded bin/fm-status-append.sh helper, which mechanically refuses a
+# `done:` line until the pipeline has recorded a validated PR.
+test_no_mistakes_done_drift_is_structurally_blocked() {
+  local home id brief
+  home="$TMP_ROOT/done-drift-home"
+  mkdir -p "$home/data"
+  id="brief-done-drift-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+
+  assert_grep "fm-status-append.sh" "$brief" \
+    "no-mistakes brief must route its status report through the guarded helper"
+  assert_grep "is refused, with the exact next step printed instead" "$brief" \
+    "no-mistakes brief must document the mechanical done refusal"
+  assert_no_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+    "no-mistakes brief must not defer starting the pipeline to a later firstmate instruction"
+  assert_grep "Immediately invoke /no-mistakes yourself" "$brief" \
+    "no-mistakes brief must make running the pipeline the literal next step after the commit"
+  assert_grep '"Committed, gates green" is NOT done.' "$brief" \
+    "no-mistakes brief must state outright that committed-with-gates-green is not done"
+  pass "fm-brief.sh: no-mistakes done is structurally blocked before a validated PR, not left to prose"
+}
+
+# Every other delivery mode has no pipeline step to skip, so its status report
+# must stay a bare echo - the guard would be a no-op there but should not add
+# an unfamiliar command to a brief that does not need it.
+test_non_no_mistakes_modes_keep_bare_status_echo() {
+  local home mode id brief
+  home="$TMP_ROOT/bare-echo-home"
+  mkdir -p "$home/data"
+  for mode in direct-PR local-only; do
+    id="brief-bare-echo-$mode"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode brief was not scaffolded"
+    assert_grep 'echo "{state}: {one short line}" >>' "$brief" \
+      "$mode brief must keep the bare status echo"
+    assert_no_grep "fm-status-append.sh" "$brief" \
+      "$mode brief must not reference the no-mistakes-only guard helper"
+  done
+  pass "fm-brief.sh: direct-PR and local-only briefs keep the bare status echo"
 }
 
 test_ship_project_memory_wording() {
@@ -771,6 +822,8 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_done_drift_is_structurally_blocked
+test_non_no_mistakes_modes_keep_bare_status_echo
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

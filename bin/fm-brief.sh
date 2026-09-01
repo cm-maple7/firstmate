@@ -395,6 +395,22 @@ case "$MODE" in
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
 
+# A mode=no-mistakes ship task's status report routes through the guarded
+# fm-status-append.sh helper instead of a bare echo: it refuses a `done:` line
+# until state/<id>.meta records the pipeline's validated pr= (bin/fm-pr-check.sh),
+# printing the exact next step instead, so "committed, gates green" mechanically
+# cannot pass as done. Other modes have no pipeline step to skip, so they keep
+# the bare echo.
+if [ "$MODE" = no-mistakes ]; then
+  STATUS_HELPER=$(shell_quote "$FM_ROOT/bin/fm-status-append.sh")
+  REPORT_CMD="$STATUS_HELPER $STATUS_FILE \"{state}: {one short line}\""
+  REPORT_GUARD_NOTE="
+   This mode=no-mistakes task's status file is guarded: appending \`done:\` this way is refused, with the exact next step printed instead, until \`no-mistakes\` has recorded a validated PR for this task. Never bypass the helper with a bare \`echo ... >> $STATUS_FILE\`."
+else
+  REPORT_CMD="echo \"{state}: {one short line}\" >> $STATUS_FILE"
+  REPORT_GUARD_NOTE=""
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -417,7 +433,7 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
-   \`echo "{state}: {one short line}" >> $STATUS_FILE\`
+   \`$REPORT_CMD\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
@@ -428,7 +444,7 @@ $RULE1
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
-   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.$REPORT_GUARD_NOTE
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.

@@ -48,7 +48,10 @@
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
-#      `resolved` never become current state or detail.
+#      `resolved` never become current state or detail. A mode=no-mistakes ship
+#      task's own `done:` with no run ever attributed and no validated pr=
+#      recorded in state/<id>.meta is reported as parked, not done: it declared
+#      done without ever starting the pipeline it still owes.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
@@ -108,7 +111,17 @@ WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 REMOTE_HOST=$(meta_value remote_host)
+MODE=$(meta_value mode)
 [ -n "$KIND" ] || KIND=ship
+
+# 0 if this is a mode=no-mistakes ship task that has declared done without the
+# pipeline ever recording a validated PR (bin/fm-pr-check.sh's pr= line). Such a
+# task is NOT done - a worker that stops at "committed, gates green" has not run
+# /no-mistakes yet - so callers use this to keep that status-log verb from being
+# read as the real terminal state.
+crew_declared_done_without_pr() {
+  [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ] && ! grep -q '^pr=' "$META" 2>/dev/null
+}
 
 # A torn-down (or never-created) worktree has no current state to read. A
 # remote secondmate's recorded worktree is a path on ITS host, so the local
@@ -691,6 +704,14 @@ fi
 # `unknown` verdict as the "not a state" test needs no second verb list here.
 if [ -n "$LOG_VERB" ]; then
   LOG_STATE=$(map_log_state "$LOG_LINE")
+  # A no-mistakes ship task's own `done:` line means "implementation complete",
+  # never "shipped" - no-mistakes still owns review, fixes, push, PR, and CI. With
+  # no run attributed at all (this fallback) and no validated pr= recorded, that
+  # line is reported as parked (needing firstmate's attention), not done, so a
+  # crew that stopped short of the pipeline never reads as finished.
+  if [ "$LOG_STATE" = "done" ] && crew_declared_done_without_pr; then
+    emit parked status-log "implementation complete, pipeline not started - run /no-mistakes"
+  fi
   if [ "$LOG_STATE" != unknown ]; then
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
   fi
