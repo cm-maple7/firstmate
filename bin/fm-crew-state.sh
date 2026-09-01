@@ -48,7 +48,11 @@
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
-#      agree, and are reported as parked.
+#      agree, and are reported as parked. A last line that instead declares
+#      paused:/captain-held while the run's only remaining step is CI
+#      monitoring (never fixing, never a gate) wins over the run-step's own
+#      working/done reading and is reported as paused, since that is a
+#      declared external wait, not active work.
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
@@ -584,6 +588,24 @@ if [ "$HAVE_RUN" = 1 ]; then
             CI_LOG_STATE=not-ready
             ;;
         esac
+      fi
+      # A crew whose only remaining pipeline activity is CI monitoring (no
+      # gate, not fixing, no independently-resolved outcome) is, once it has
+      # declared paused:/captain-held itself, intentionally waiting on an
+      # external dependency - upstream checks that may never post without
+      # maintainer approval, or the captain's own merge - not "still
+      # validating". Root cause of the 2026-08-27 fm-parked-run-wedge-alarm
+      # incident: this run-step reading otherwise stays working/done and
+      # outranks the declared wait every poll, so the watcher wedge-escalates
+      # a legitimately parked task forever. Restricting the override to the ci
+      # step specifically (never fixing, never a gate) keeps a genuinely
+      # active run's own state authoritative - a declared pause there is
+      # stale and must not silence it.
+      if [ "$CI_STEP_STATUS" = running ] \
+        && [ "$has_gate" = 0 ] && [ -z "$outcome" ] \
+        && status_is_paused_or_captain_held "$LOG_LINE"; then
+        RUN_STATE=paused
+        RUN_DETAIL="declared wait (ci monitoring): $RUN_DETAIL"
       fi
     fi
   fi

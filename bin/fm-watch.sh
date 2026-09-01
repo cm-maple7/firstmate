@@ -538,15 +538,25 @@ clear_write_tracking() {  # <window-key>
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
 # escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
-# The worktree write probe runs ONLY here, inside the at-threshold branch that is
-# about to escalate: at most one bounded walk per window per STALE_ESCALATE_SECS,
-# never per poll.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason
+# state by default (the costly check already ran once, at classification
+# time), EXCEPT when the caller passes reverify_working=1 (the chain was
+# opened by a run-step "working" classification rather than a busy pane): a
+# no-mistakes background validation can legitimately sit on an idle pane far
+# longer than STALE_ESCALATE_SECS, so at each threshold crossing this
+# re-confirms the run is still provably working before escalating - the same
+# "never escalate past positive evidence" contract crew_worktree_written_since
+# already gives a busy foreground pane, applied to a background run's own
+# authoritative run-step reading instead. A run-step that has moved to parked
+# (awaiting_approval/fix_review) or otherwise stopped reporting working no
+# longer re-verifies true, so it still escalates rather than absorbing forever.
+# Shared by both places a hash can be absorbed this way: the plain
+# non-terminal path, and the stale_is_terminal-overridden path (a
+# captain-relevant status-log line that an active run/busy pane outranked).
+# The worktree write probe and the reverify check both run ONLY here, inside
+# the at-threshold branch that is about to escalate: at most one bounded check
+# per window per STALE_ESCALATE_SECS, never per poll.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [reverify_working]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 reverify_working=${6:-} since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -559,6 +569,11 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        if [ -n "$reverify_working" ] && crew_is_provably_working "$task"; then
+          date +%s > "$since_file"
+          triage_log "absorbed $label timer reset (re-verified still working): $win"
+          return 0
+        fi
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then
           wedge_defer_writing "$win" "$since_file" "$label" "$age"
           return 0
@@ -699,9 +714,18 @@ clear_pause_tracking() {  # <window-key>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# After fm-crew-state has fallen back to stopped or unknown, paused classification is
-# recovered only for a confidently dead ordinary crew, or for a secondmate, whose
-# endpoint liveness this function deliberately never reads.
+# A run-step-attributed paused verdict (fm-crew-state.sh's ci-monitoring-only
+# reconciliation, which has already corroborated the wait against the
+# pipeline's own state: no gate, not fixing, no independently-resolved
+# outcome) is trusted immediately, live agent or not - a worker's own
+# supervising loop staying alive to poll CI in the background is expected,
+# not evidence the declared wait is stale. After fm-crew-state has fallen
+# back to stopped or unknown, or the pause came only from the status log with
+# no run to corroborate it, paused classification instead requires a
+# confidently dead ordinary crew's agent (or a secondmate, whose endpoint
+# liveness this function deliberately never reads): a status-log pause from a
+# still-alive agent may be sitting at an undeclared live interactive gate
+# rather than the wait it named, so it is surfaced instead of trusted.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive kind
   key=$(window_key "$win")
@@ -710,6 +734,11 @@ pause_state_class() {  # <window> <task>
   if ! status_is_paused_or_captain_held "$last"; then
     rm -f "$recheck_file"
     crew_absorb_class "$task"
+    return
+  fi
+  if crew_run_step_paused "$task"; then
+    date +%s > "$recheck_file"
+    printf 'paused'
     return
   fi
   # Read once past the declared-wait gate and reused by both liveness gates below,
@@ -1457,7 +1486,7 @@ EOF
             # wedge timer is running for it) - keep treating it that way
             # without re-reading the crew state every poll, and without
             # letting the still-captain-relevant log line re-surface it.
-            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" "$task"
+            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" "$task" 1
           fi
           # else: already surfaced as genuinely terminal on a prior poll of
           # this same hash - nothing left to do (matches the original,
@@ -1500,12 +1529,12 @@ EOF
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$key"
                          printf '%s' "$h" > "$sf"
-                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$task"
+                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$task" 1
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task"
+              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task" 1
             fi
           fi
         fi

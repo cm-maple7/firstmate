@@ -1309,6 +1309,27 @@ crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
 }
 
+# 0 if crew <id>'s declared pause/captain-held wait is attributed to the
+# run-step (fm-crew-state.sh's ci-monitoring-only reconciliation), as opposed
+# to the no-run status-log fallback. A run-step pause has already been
+# corroborated against the pipeline's own state - no gate, not fixing, no
+# independently-resolved outcome - so fm-watch.sh's pause_state_class trusts
+# it outright, live agent or not. A no-run fallback pause carries no such
+# corroboration and instead still needs pause_state_class's agent-liveness
+# recovery: a still-alive agent may be sitting at an undeclared live
+# interactive gate rather than the wait it named. A second $FM_CREW_STATE_BIN
+# read (crew_absorb_class already made one), but only inside the already-rare
+# declared-pause branch its caller gates this behind, never per poll.
+crew_run_step_paused() {  # <id>
+  local id=$1 line
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || return 1
+  case "$line" in
+    "state: paused"*"source: run-step"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Directories excluded from the worktree write probe below, and the depth it walks.
 # The excluded set is everything a supervisor read or a package manager can write
 # without the crew doing any work - .git first, so firstmate's own read-only git
