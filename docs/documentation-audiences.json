@@ -433,6 +433,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/self-update.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/stow-memory.md",
       "audience": "maintainer-verification"
     },

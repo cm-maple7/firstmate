@@ -29,6 +29,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    bin/fm-update.sh
    ```
    It fast-forwards this firstmate repo's default branch from origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
+   Origin is the only source it advances from, so in a fork, upstream work reaches homes only after it has landed on the fork's own default branch; CONTRIBUTING.md's "Fork remotes and upstream sync" owns that deliberate sync procedure.
    It prints one status line per target (`updated <old>..<new>` / `already current` / `skipped: <reason>`), followed by two action lines that tell you exactly what to do next:
    - `reread-firstmate: yes|no`
    - `nudge-secondmates: fm-<id>...|none`
