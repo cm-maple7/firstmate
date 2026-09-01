@@ -151,16 +151,28 @@ seed_commitment() {
     || fail "could not register the public commitment"
 }
 
+# A hardcoded absolute date eventually lands in the past and breaks this suite
+# deterministically (fm-fix-followup-fixture-timebomb), so fixture timestamps
+# that get compared against the real wall clock are computed relative to it
+# instead. Mirrors the macOS/GNU date fallback pattern already used below.
+_pf_iso_offset_days() {  # <signed-days, e.g. -7 or +7>
+  date -u -v"${1}"d +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -d "${1} days" +'%Y-%m-%dT%H:%M:%SZ'
+}
+
 # The pi-rearm shape: a report-ready promised-final bound to a secondmate.
 seed_repro_commitment() {   # <home> <obligation> <request> <work-home> <work-id>
   local home=$1 obligation=$2 request=$3 work_home=$4 work_id=$5
-  jq -n --arg r "$request" \
+  local received_at expires_at
+  received_at=$(_pf_iso_offset_days -7)
+  expires_at=$(_pf_iso_offset_days 7)
+  jq -n --arg r "$request" --arg received "$received_at" --arg expires "$expires_at" \
     '{request_id:$r, platform:"discord",
       context_binding:{version:"ctx1", value:("ctx1_" + $r)},
       public_safe_summary:"reproduce a Pi recovery notification loop",
-      received_at:"2026-08-21T01:12:00Z",
-      followup_expires_at:"2026-08-28T01:12:00Z",
-      reservation_expires_at:"2026-08-28T01:12:00Z"}' > "$home/request.json"
+      received_at:$received,
+      followup_expires_at:$expires,
+      reservation_expires_at:$expires}' > "$home/request.json"
   jq -n '{type:"report-ready", project:"firstmate",
           required_deliverables:["report_path"], completion_policy:"all-required"}' \
     > "$home/expected.json"
@@ -1832,7 +1844,7 @@ test_rechain_refuses_unclaimed_existing_destination() {
   tasks_in "$home" public-followup add public-final-existing-b \
     --request-context-file "$home/request.json" --purpose promised-final \
     --expected-final-file "$home/collision-expected.json" \
-    --expires-at 2026-08-28T01:12:00Z >/dev/null || fail "could not seed destination collision"
+    --expires-at "$(_pf_iso_offset_days 7)" >/dev/null || fail "could not seed destination collision"
 
   expect_failure "a first rechain must not adopt an unrelated existing obligation" \
     run_pf "$home" rechain public-final-existing-b --from public-final-existing-a \
@@ -2007,11 +2019,14 @@ test_retention_creates_no_false_teardown_refusal() {
 }
 
 test_expiry_escalation_uses_now_override() {
-  local home out exp now_closing now_expired registry tmp
+  local home out exp exp_iso now_closing now_expired registry tmp
   home=$(make_home expiry-window)
   seed_repro_commitment "$home" pf-exp req-exp main work-exp
-  exp=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' '2026-08-28T01:12:00Z' +%s 2>/dev/null) \
-    || exp=$(date -u -d '2026-08-28T01:12:00Z' +%s)
+  # Read back the expiry seed_repro_commitment actually wrote (real-clock-relative,
+  # fm-fix-followup-fixture-timebomb) instead of duplicating a second hardcoded date.
+  exp_iso=$(jq -r '.followup_expires_at' "$home/request.json")
+  exp=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$exp_iso" +%s 2>/dev/null) \
+    || exp=$(date -u -d "$exp_iso" +%s)
   now_closing=$((exp - 3600))
   now_expired=$((exp + 60))
   out=$(FMX_NOW_OVERRIDE="$now_expired" run_pf "$home" pending)
