@@ -1306,6 +1306,65 @@ test_no_run_idle_pane_uses_log() {
   pass "no run + idle pane uses the status-log verb"
 }
 
+# A mode=no-mistakes ship task that declared done at "committed, gates green"
+# without ever starting a run and without a validated pr= in its meta must not
+# read as done: the direct regression case for the 08-30/08-31 done-drift
+# pattern, where nine workers reported done at commit and the pipeline was
+# never run.
+test_no_run_no_mistakes_done_without_pr_reports_parked() {
+  reset_fakes
+  local d; d=$(new_case no-mistakes-done-no-pr)
+  make_repo_on_branch "$d/wt" fm/feat-nm
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-nm.meta" "window=fm:fm-feat-nm" "worktree=$d/wt" "kind=ship" \
+    "harness=claude" "mode=no-mistakes"
+  printf 'done: committed, gates green\n' > "$d/state/feat-nm.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  arm_idle_record "$d/state" feat-nm
+  local out; out=$(run_crew_state "$d" feat-nm)
+  assert_contains "$out" "state: parked" "premature no-mistakes done reports parked, not done"
+  assert_contains "$out" "pipeline not started" "detail names the missing pipeline step"
+  pass "a no-mistakes done with no run and no pr reports parked"
+}
+
+# The same crew, once its meta records the pipeline's validated pr=, is
+# genuinely done: fm-pr-check.sh's pr= line is what un-blocks the terminal
+# state, not a second run attribution path.
+test_no_run_no_mistakes_done_with_pr_reports_done() {
+  reset_fakes
+  local d; d=$(new_case no-mistakes-done-with-pr)
+  make_repo_on_branch "$d/wt" fm/feat-nm2
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-nm2.meta" "window=fm:fm-feat-nm2" "worktree=$d/wt" "kind=ship" \
+    "harness=claude" "mode=no-mistakes" "pr=https://github.com/x/y/pull/1"
+  printf 'done: PR https://github.com/x/y/pull/1 checks green\n' > "$d/state/feat-nm2.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  arm_idle_record "$d/state" feat-nm2
+  local out; out=$(run_crew_state "$d" feat-nm2)
+  assert_contains "$out" "state: done" "a validated pr= lets the done line stand"
+  pass "a no-mistakes done with a recorded pr= reports done"
+}
+
+# A non-no-mistakes ship mode has no pipeline step to skip, so its done line is
+# never held back for a missing pr=.
+test_no_run_direct_pr_done_without_pr_still_reports_done() {
+  reset_fakes
+  local d; d=$(new_case direct-pr-done-no-pr)
+  make_repo_on_branch "$d/wt" fm/feat-dp
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-dp.meta" "window=fm:fm-feat-dp" "worktree=$d/wt" "kind=ship" \
+    "harness=claude" "mode=direct-PR"
+  printf 'done: PR https://github.com/x/y/pull/2\n' > "$d/state/feat-dp.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  arm_idle_record "$d/state" feat-dp
+  local out; out=$(run_crew_state "$d" feat-dp)
+  assert_contains "$out" "state: done" "direct-PR mode has no pipeline gate to withhold done for"
+  pass "a direct-PR done with no pr= metadata still reports done"
+}
+
 test_no_run_idle_pane_uses_keyed_log() {
   reset_fakes
   local d; d=$(new_case keyed-idle)
@@ -2039,6 +2098,9 @@ test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log
+test_no_run_no_mistakes_done_without_pr_reports_parked
+test_no_run_no_mistakes_done_with_pr_reports_done
+test_no_run_direct_pr_done_without_pr_still_reports_done
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb

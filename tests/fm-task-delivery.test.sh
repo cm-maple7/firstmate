@@ -361,8 +361,12 @@ STUB
   payload="$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr"
   assert_grep "supersede the scout delivery rules and report-based Definition of done" "$payload" \
     "promoted worker retained the scout delivery contract"
-  assert_grep "status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule" "$payload" \
+  assert_grep "the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule" "$payload" \
     "promoted worker lost the scout protocols and safety rules that still apply"
+  assert_grep 'echo "{state}: {one short line}" >>' "$payload" \
+    "promoted direct-PR worker's status-report command was not regenerated as the bare echo"
+  assert_no_grep "fm-status-append.sh" "$payload" \
+    "promoted direct-PR worker was routed through the no-mistakes-only guard helper"
 
   # The faster paths keep their own contracts rather than inheriting the pipeline's.
   assert_grep "Do NOT run /no-mistakes" "$payload" \
@@ -372,6 +376,116 @@ STUB
   assert_no_grep "no-mistakes axi respond" "$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr" \
     "promoted direct-PR worker received the pipeline gate contract"
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
+}
+
+# Direct regression for the promoted-scout half of the 08-30/08-31 done-drift
+# pattern: a scout is never mode=no-mistakes, so its own status-report rule is
+# always the bare echo bin/fm-brief.sh never had a chance to guard. Promotion
+# used to hand-copy that bare echo forward via "the status protocol ... carries
+# over unchanged", so a promoted no-mistakes worker could still mechanically
+# append `done: committed, gates green` with zero refusal. This drives the real
+# promotion path, extracts the exact status-report command the delivered
+# instructions tell the worker to run, and then RUNS it against the promoted
+# task's own status/meta files - proving the guarded helper is what actually
+# executes, not just what the text happens to mention.
+test_promoted_no_mistakes_status_report_is_guarded() {
+  local home meta out sendroot payload id status_file report_cmd rc done_cmd
+  home="$TMP_ROOT/promote-guard/home"
+  sendroot="$TMP_ROOT/promote-guard/sendroot"
+  mkdir -p "$home/state" "$sendroot/bin"
+  cat > "$sendroot/bin/fm-send.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' "$2" > "$FM_TEST_CAPTURE"
+STUB
+  chmod +x "$sendroot/bin/fm-send.sh"
+
+  id=promote-guard-nm
+  meta="$home/state/$id.meta"
+  status_file="$home/state/$id.status"
+  printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off 2>&1) \
+    || fail "promotion to mode=no-mistakes should succeed"
+
+  payload="$TMP_ROOT/promote-guard/payload-$id"
+  ( cd "$sendroot" \
+    && FM_TEST_CAPTURE="$payload" \
+       eval "$(printf '%s\n' "$out" | sed -n 's/^next: //p' | grep 'fm-send\.sh')" ) \
+    || fail "promotion's delivery command did not run"
+  assert_present "$payload" "promotion delivered no message to the worker"
+  assert_no_grep "the status protocol; the instruction inbox" "$payload" \
+    "a promoted no-mistakes worker was still told its status protocol carries over unchanged"
+
+  # Pull the exact status-report command out of the delivered instructions -
+  # the line is unique because only the status-report rule carries this
+  # literal placeholder - then execute it for real instead of grepping for the
+  # helper's name.
+  # shellcheck disable=SC2016  # the backticks are a literal grep pattern, not command substitution.
+  report_cmd=$(grep -F '{state}: {one short line}' "$payload" | grep -o '`[^`]*`' | head -1)
+  report_cmd=${report_cmd#\`}
+  report_cmd=${report_cmd%\`}
+  [ -n "$report_cmd" ] || fail "could not find a rendered status-report command in the delivered instructions"
+  case "$report_cmd" in
+    echo\ *) fail "a promoted no-mistakes worker was told to use the bare echo, not the guarded helper" ;;
+  esac
+  printf '%s' "$report_cmd" | grep -q 'fm-status-append\.sh' \
+    || fail "a promoted no-mistakes worker was not told to use the guarded status-append helper"
+
+  done_cmd=${report_cmd/'{state}: {one short line}'/'done: committed, gates green'}
+  out=$(eval "$done_cmd" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "the promoted worker's own status-report command let a premature done through"
+  assert_contains "$out" "is not done" "refusal did not explain why committed-with-gates-green is not done"
+  assert_absent "$status_file" "a refused done was still appended to the promoted worker's status file"
+
+  done_cmd=${report_cmd/'{state}: {one short line}'/'done: PR https://github.com/x/y/pull/1 checks green'}
+  eval "$done_cmd" || fail "the promoted worker's own status-report command refused a done line naming a real PR URL"
+  assert_contains "$(cat "$status_file")" "checks green" \
+    "the allowed done line was not appended through the promoted worker's status-report command"
+  pass "fm-promote: a promoted no-mistakes worker's own status-report command is guarded exactly like a fresh brief's"
+}
+
+# The guard is specific to mode=no-mistakes: a promoted direct-PR or local-only
+# worker has no pipeline step to skip, so it must keep the bare echo firstmate
+# never needs to gate - the same command a fresh brief on the same mode uses.
+test_promoted_other_modes_keep_bare_status_echo() {
+  local home meta out sendroot payload id mode status_file report_cmd
+  sendroot="$TMP_ROOT/promote-bare-echo/sendroot"
+  mkdir -p "$sendroot/bin"
+  cat > "$sendroot/bin/fm-send.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' "$2" > "$FM_TEST_CAPTURE"
+STUB
+  chmod +x "$sendroot/bin/fm-send.sh"
+
+  for mode in direct-PR local-only; do
+    home="$TMP_ROOT/promote-bare-echo/home-$mode"
+    mkdir -p "$home/state"
+    id="promote-bare-echo-$mode"
+    meta="$home/state/$id.meta"
+    status_file="$home/state/$id.status"
+    printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode "$mode" --yolo off 2>&1) \
+      || fail "$mode: promotion should succeed"
+
+    payload="$TMP_ROOT/promote-bare-echo/payload-$id"
+    ( cd "$sendroot" \
+      && FM_TEST_CAPTURE="$payload" \
+         eval "$(printf '%s\n' "$out" | sed -n 's/^next: //p' | grep 'fm-send\.sh')" ) \
+      || fail "$mode: promotion's delivery command did not run"
+
+    # shellcheck disable=SC2016  # the backticks are a literal grep pattern, not command substitution.
+  report_cmd=$(grep -F '{state}: {one short line}' "$payload" | grep -o '`[^`]*`' | head -1)
+    report_cmd=${report_cmd#\`}
+    report_cmd=${report_cmd%\`}
+    [ -n "$report_cmd" ] || fail "$mode: could not find a rendered status-report command in the delivered instructions"
+    printf '%s' "$report_cmd" | grep -q 'fm-status-append\.sh' \
+      && fail "$mode: a promoted worker with no pipeline step to skip was routed through the no-mistakes-only guard"
+
+    eval "${report_cmd/'{state}: {one short line}'/'done: whatever the worker landed'}" \
+      || fail "$mode: the promoted worker's own bare-echo status-report command failed"
+    assert_contains "$(cat "$status_file")" "done: whatever the worker landed" \
+      "$mode: the promoted worker's bare-echo status-report command did not append the done line"
+  done
+  pass "fm-promote: direct-PR and local-only promotions keep the bare status echo"
 }
 
 # The registry parser survives for the mechanical consumers only. It accepts the
@@ -416,5 +530,7 @@ test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
+test_promoted_no_mistakes_status_report_is_guarded
+test_promoted_other_modes_keep_bare_status_echo
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"

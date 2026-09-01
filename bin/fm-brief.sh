@@ -395,6 +395,14 @@ case "$MODE" in
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
 
+# A mode=no-mistakes ship task's status report routes through the guarded
+# fm-status-append.sh helper instead of a bare echo: it refuses a `done:` line
+# that names no PR URL, printing the exact next step instead, so "committed,
+# gates green" mechanically cannot pass as done. Other modes have no pipeline
+# step to skip, so they keep the bare echo.
+REPORT_CMD=$(fm_status_report_line "$MODE" "$FM_ROOT" "$STATUS_FILE")
+REPORT_GUARD_NOTE=$(fm_status_report_guard_note "$MODE" "$STATUS_FILE")
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -417,7 +425,7 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
-   \`echo "{state}: {one short line}" >> $STATUS_FILE\`
+   \`$REPORT_CMD\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
@@ -428,7 +436,7 @@ $RULE1
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
-   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.$REPORT_GUARD_NOTE
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
