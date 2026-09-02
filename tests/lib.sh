@@ -351,12 +351,20 @@ is_live_non_zombie() {
 # had to be killed from outside after 900 seconds.
 #
 # So: ask, allow <ticks> tenth-seconds to leave, then insist. SIGKILL cannot be
-# trapped, so the bound holds whatever the exit path is doing. No assertion is
-# weakened by this - reap is cleanup that runs after a case has already made its
-# assertions - and the only behavior that changes is that a wedged exit path now
-# costs a bounded wait and a reported result instead of an unbounded hang.
+# trapped, so the bound holds whatever the exit path is doing. Most callers only
+# need this as cleanup that runs after a case has already made its assertions,
+# but some (fm-watch-triage.test.sh's ack_stopped_cycle) rely on the EXIT trap
+# itself completing - it is what publishes the downtime recovery marker a later
+# drain must acknowledge - so an escalation to SIGKILL there does not just skip
+# cleanup, it erases real trap-side effects the next assertion depends on. The
+# default is therefore the same 10s standard budget wait_for_exit uses (see its
+# comment for the measurement): both bound the same fm-watch.sh, under the same
+# CI load, doing comparably-sized bounded work (recovery-marker snapshot and
+# lock acquisition on the way in, the same marker's transition on the way out).
+# A tighter bound here would reap a watcher still finishing its exit trap and
+# report a spurious downstream failure instead of a real one.
 reap() {
-  local pid=$1 limit=${2:-50} i=0
+  local pid=$1 limit=${2:-100} i=0
   kill "$pid" 2>/dev/null || true
   while [ "$i" -lt "$limit" ]; do
     is_live_non_zombie "$pid" || break
