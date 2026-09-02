@@ -390,6 +390,18 @@ jobs:
             exit 1
           }
 
+          # The wake lock's reclaim rests on naming the running frame, and this
+          # is the only shell here with no BASHPID to name it with, so the
+          # portable Linux lanes cannot exercise that half of the contract.
+          lock_output=$(FM_TEST_ONLY=test_self_held_lock_reclaims_instead_of_deadlocking \
+            /bin/bash tests/fm-wake-queue.test.sh)
+          printf '%s\n' "$lock_output"
+          lock_count=$(printf '%s\n' "$lock_output" | grep -c '^ok - ')
+          [ "$lock_count" -eq 1 ] || {
+            echo "::error::expected 1 wake-lock frame-identity regression, got $lock_count"
+            exit 1
+          }
+
           command -v npm >/dev/null || { echo "::error::npm is required to install tasks-axi"; exit 1; }
           npm install -g tasks-axi@0.2.5 >/dev/null
           PATH="$(npm prefix -g)/bin:$PATH"

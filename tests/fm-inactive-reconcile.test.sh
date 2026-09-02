@@ -119,7 +119,8 @@ prime_seen() { # <state> <status>
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$2"
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# reap comes from tests/lib.sh, which owns the bounded stop-and-collect these
+# watcher fixtures need; a local `kill; wait` here could hang the whole suite.
 
 # The main retains a terminal presentation receipt until the corresponding wake
 # is handled and acknowledged.

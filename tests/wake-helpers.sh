@@ -296,8 +296,20 @@ SH
   printf '%s\n' "$dir"
 }
 
+# wait_for_exit <pid> [ticks]: wait up to <ticks> tenth-seconds for a one-shot
+# watcher to exit, returning its exit status, or 124 after reaping it.
+#
+# The standard budget is 100 ticks (10s), and this is the single owner of why:
+# not because any watcher takes that long to decide, but because fm-watch.sh
+# does bounded startup work before its first poll, and one poll of that work
+# was measured at 1.1s idle and 2.5s on a machine at load 18. A budget close to
+# that cost reaps the process while it is still starting and reports a spurious
+# "did not surface" failure. A generous budget can only remove that false
+# negative - a watcher that never surfaces its wake still fails its assertion
+# when the budget runs out - so a case needs a reason to go below the standard,
+# never a reason to reach it.
 wait_for_exit() {
-  local pid=$1 limit=${2:-50} i=0
+  local pid=$1 limit=${2:-100} i=0
   while [ "$i" -lt "$limit" ]; do
     if ! is_live_non_zombie "$pid"; then
       wait "$pid"
@@ -306,19 +318,11 @@ wait_for_exit() {
     sleep 0.1
     i=$((i + 1))
   done
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  # Out of budget: stop it through the bounded reaper in tests/lib.sh rather
+  # than an unbounded wait, so a watcher stuck in its own exit path reports 124
+  # here instead of hanging the suite.
+  reap "$pid"
   return 124
-}
-
-is_live_non_zombie() {
-  local pid=$1 stat
-  kill -0 "$pid" 2>/dev/null || return 1
-  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
-  case "$stat" in
-    Z*) return 1 ;;
-  esac
-  return 0
 }
 
 hash_text() {

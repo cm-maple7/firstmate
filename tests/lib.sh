@@ -99,6 +99,14 @@ fm_test_cleanup() {
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1
+  # Hand back the PHYSICAL path. On macOS $TMPDIR is /var/folders/... and /var
+  # is a symlink to private/var, so every fixture built under the name mktemp
+  # returns is reached through a symlink - which a real firstmate home never is.
+  # Production code that refuses a state root reachable through a symlink (the
+  # process-event claim's state-root identity in bin/fm-procevent-lib.sh) then
+  # rejects the fixture itself, and the suite reports the refusal as a product
+  # failure on macOS while passing on Linux, where /tmp is a real directory.
+  root=$(cd -P -- "$root" && pwd -P) || return 1
   if ! printf '%s\n%s\n' "$$" "$FM_TEST_OWNER_IDENTITY" > "$root/.fm-test-fixture" ||
     ! printf '%s\n' "$root" >> "$FM_TEST_CLEANUP_REGISTRY"; then
     rm -rf "$root"
@@ -312,4 +320,49 @@ assert_absent() {
 # assert_present <path> <msg>: path must exist.
 assert_present() {
   [ -e "$1" ] || fail "$2"
+}
+
+# --- fixture process helpers ------------------------------------------------
+
+# is_live_non_zombie <pid>: true while <pid> is a running process, false once it
+# is gone or has already exited and is only waiting to be collected. `kill -0`
+# alone cannot tell those apart - a zombie still answers it - so a bounded wait
+# built on `kill -0` would spend its whole budget on a process that is already
+# finished.
+is_live_non_zombie() {
+  local pid=$1 stat
+  kill -0 "$pid" 2>/dev/null || return 1
+  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+  case "$stat" in
+    Z*) return 1 ;;
+  esac
+  return 0
+}
+
+# reap <pid> [ticks]: stop a fixture process and collect it, within a bound.
+# This is the single owner of how these suites stop a process they spawned.
+#
+# `kill; wait` is the obvious spelling and it is unbounded, which matters here
+# because the process being stopped is usually bin/fm-watch.sh, and a watcher
+# leaves through an EXIT trap that itself takes a lock. Signal one while that
+# lock is contended and it can sit in its own exit path indefinitely; the `wait`
+# then hangs with it, taking the whole suite down with no failing assertion and
+# no output naming the case it stopped in. That was observed once as a run that
+# had to be killed from outside after 900 seconds.
+#
+# So: ask, allow <ticks> tenth-seconds to leave, then insist. SIGKILL cannot be
+# trapped, so the bound holds whatever the exit path is doing. No assertion is
+# weakened by this - reap is cleanup that runs after a case has already made its
+# assertions - and the only behavior that changes is that a wedged exit path now
+# costs a bounded wait and a reported result instead of an unbounded hang.
+reap() {
+  local pid=$1 limit=${2:-50} i=0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt "$limit" ]; do
+    is_live_non_zombie "$pid" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
 }

@@ -36,6 +36,29 @@ fm_pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+# fm_pid_is_this_frame <recorded-pid>
+# True when a pid recorded in a lock names the exact frame asking. Lock reclaim
+# turns on this and nothing else, and the case it has to get right is a subshell
+# looking at a lock its parent still holds: the parent is alive, so reading that
+# lock as "mine, abandoned" would hand the subshell a live hold.
+#
+# BASHPID names the frame directly and must be read inline - a command
+# substitution would answer for its own subshell, and $(this function) would
+# too, so CALL it. Stock macOS bash 3.2 has no BASHPID at all, and its $$ is the
+# same value in every subshell, so there $$ names a frame only where there is no
+# subshell to confuse it with: the main shell, the one place BASH_SUBSHELL is 0.
+# Deeper frames on that shell get no reclaim and keep waiting, which is what the
+# lock did before reclaim existed.
+fm_pid_is_this_frame() {
+  local recorded=$1
+  [ -n "$recorded" ] || return 1
+  if [ -n "${BASHPID:-}" ]; then
+    [ "$recorded" = "$BASHPID" ]
+    return
+  fi
+  [ "${BASH_SUBSHELL:-0}" = 0 ] && [ "$recorded" = "$$" ]
+}
+
 fm_pid_identity() {
   local pid=$1 out proc_root stat_line starttime cmdline_hex identity_key
   local -a stat_fields
@@ -801,11 +824,10 @@ fm_lock_try_acquire() {
     return 0
   fi
 
-  # Compare against ${BASHPID:-$$} inline, never via a command substitution:
-  # $() forks a subshell whose BASHPID is not this frame's pid.
+  # fm_pid_is_this_frame owns what counts as "this frame" on each shell.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-  if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ]; then
-    # The recorded holder is THIS very process. Single-threaded bash can only
+  if fm_pid_is_this_frame "$pid"; then
+    # The recorded holder is THIS very frame. Single-threaded bash can only
     # observe that when an interrupting trap abandoned the frame that held the
     # lock mid-critical-section (e.g. TERM inside a recovery-marker section,
     # with the EXIT path then re-acquiring the same lock), and every

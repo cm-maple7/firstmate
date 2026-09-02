@@ -68,7 +68,7 @@ test_signal_catchup_without_running_watcher() {
   # tested.
   printf 'blocked: first\n' > "$status_file"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
-  wait_for_exit "$!" 40 || fail "watcher did not exit for first signal"
+  wait_for_exit "$!" || fail "watcher did not exit for first signal"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print first signal"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$drain_err" || fail "drain after first signal failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "first signal was not queued"
@@ -80,7 +80,7 @@ test_signal_catchup_without_running_watcher() {
   printf 'done: second\n' >> "$status_file"
   : > "$out"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
-  wait_for_exit "$!" 40 || fail "watcher did not exit for second signal"
+  wait_for_exit "$!" || fail "watcher did not exit for second signal"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "signal written with no watcher was not caught"
   pass "signal written while no watcher runs is caught on next run"
 }
@@ -107,7 +107,7 @@ test_stale_enqueue_before_suppressor() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
-  wait_for_exit "$!" 40 || fail "watcher did not exit for stale pane"
+  wait_for_exit "$!" || fail "watcher did not exit for stale pane"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print stale wake"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after stale wake failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "stale wake was not queued"
@@ -144,7 +144,7 @@ test_not_working_stale_enqueue_before_suppressor() {
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
-  wait_for_exit "$!" 40 || fail "watcher did not surface a not-provably-working stale"
+  wait_for_exit "$!" || fail "watcher did not surface a not-provably-working stale"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the immediate stale wake"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after the immediate stale wake failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
@@ -169,7 +169,7 @@ SH
   FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task >/dev/null \
     || fail "could not register queue custom check"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
-  wait_for_exit "$!" 40 || fail "watcher did not exit for check output"
+  wait_for_exit "$!" || fail "watcher did not exit for check output"
   grep -F "check: $check_file: merged: https://example.test/pr/1" "$out" >/dev/null || fail "watcher did not print check wake"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after check wake failed"
   grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "$check_file" | grep -F 'merged: https://example.test/pr/1' >/dev/null || fail "check wake was not queued"
@@ -1115,9 +1115,16 @@ test_self_announced_append_guards() {
 # A trap that fires inside a lock's critical section abandons the holding
 # frame, and the exit path then re-acquires the same lock (a TERM inside a
 # recovery-marker section is the reproduced case: the watcher's reap wedged
-# forever spinning against its own pid). The same-process re-acquire must
-# reclaim the abandoned hold, while a SUBSHELL still waits on its parent's
-# live hold exactly as before.
+# forever spinning against its own pid). The same-frame re-acquire must reclaim
+# the abandoned hold, while a SUBSHELL still waits on its parent's live hold
+# exactly as before.
+#
+# Both halves turn on naming the running frame, and a shell whose $$ is shared
+# with every subshell can only do that where there is no subshell to confuse it
+# with (fm_pid_is_this_frame owns why). Stock macOS bash 3.2 is such a shell and
+# read the subshell below as its own parent before that distinction existed, so
+# both halves are asserted on whatever shell runs this file rather than on an
+# assumed one.
 test_self_held_lock_reclaims_instead_of_deadlocking() {
   local dir state rc
   dir=$(make_case self-held-lock)
@@ -1131,7 +1138,8 @@ test_self_held_lock_reclaims_instead_of_deadlocking() {
     fm_lock_release "$lock"
     [ ! -e "$lock" ] && [ ! -L "$lock" ] || exit 12
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$state" || rc=$?
-  [ "$rc" -eq 0 ] || fail "self-held lock was not reclaimed cleanly (rc=$rc)"
+  [ "$rc" -eq 0 ] \
+    || fail "self-held lock was not reclaimed cleanly (rc=$rc, bash $BASH_VERSION)"
   rc=0
   FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
@@ -1140,8 +1148,8 @@ test_self_held_lock_reclaims_instead_of_deadlocking() {
     ( fm_lock_try_acquire "$lock" && exit 13; exit 0 ) || exit 13
     fm_lock_release "$lock"
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$state" || rc=$?
-  [ "$rc" -eq 0 ] || fail "a subshell reclaimed its parent's live hold (rc=$rc)"
-  pass "an abandoned same-process lock hold is reclaimed; a parent's live hold is not"
+  [ "$rc" -eq 0 ] || fail "a subshell reclaimed its parent's live hold (rc=$rc, bash $BASH_VERSION)"
+  pass "an abandoned same-frame lock hold is reclaimed; a parent's live hold never is"
 }
 
 # Drain-time historical annotation staleness: a turn-ended-only wake row must
@@ -1192,6 +1200,14 @@ test_historical_annotation_skips_announced_status() {
     || fail "a direct status row lost its annotation"
   pass "historical annotations replay nothing already announced and keep everything new"
 }
+
+# CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the frame-identity
+# lock regression, whose contract differs on a shell with no BASHPID. Every
+# other case here is shell-agnostic and is covered by the portable lanes.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
 
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_secondmate_foreign_queue_stall_is_one_shot_and_read_only
